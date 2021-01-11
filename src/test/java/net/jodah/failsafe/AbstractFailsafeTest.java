@@ -1,3 +1,18 @@
+/*
+ * Copyright 2016 the original author or authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License
+ */
 package net.jodah.failsafe;
 
 import static net.jodah.failsafe.Asserts.assertThrows;
@@ -50,6 +65,15 @@ public abstract class AbstractFailsafeTest {
     ScheduledExecutorService executor = getExecutor();
     return unwrapExceptions(() -> executor == null ? (T) Failsafe.with(retryPolicy).get(callable)
         : (T) Failsafe.with(retryPolicy).with(executor).get(callable).get());
+  }
+
+  /**
+   * Does a failsafe get with an optional executor.
+   */
+  <T> T failsafeGet(CircuitBreaker circuitBreaker, Callable<T> callable) throws ExecutionException, InterruptedException {
+    ScheduledExecutorService executor = getExecutor();
+    return unwrapExceptions(() -> executor == null ? (T) Failsafe.with(circuitBreaker).get(callable)
+        : (T) Failsafe.with(circuitBreaker).with(executor).get(callable).get());
   }
 
   /**
@@ -127,7 +151,7 @@ public abstract class AbstractFailsafeTest {
     // When / Then
     waiter.await(10000, 3);
     for (int i = 0; i < 5; i++)
-      assertThrows(() -> failsafeRun(breaker, Testing::noop), CircuitBreakerOpenException.class);
+      assertThrows(() -> failsafeGet(breaker, () -> null), CircuitBreakerOpenException.class);
   }
 
   /**
@@ -145,7 +169,7 @@ public abstract class AbstractFailsafeTest {
       waiter.assertNull(r);
       waiter.assertEquals(failure, f);
       return false;
-    } , () -> service.connect()), Boolean.FALSE);
+    }, () -> service.connect()), Boolean.FALSE);
     verify(service, times(3)).connect();
 
     // Given
@@ -157,7 +181,7 @@ public abstract class AbstractFailsafeTest {
       waiter.assertNull(r);
       waiter.assertEquals(failure, f);
       throw new RuntimeException(f);
-    } , () -> service.connect()), RuntimeException.class, ConnectException.class);
+    }, () -> service.connect()), RuntimeException.class, ConnectException.class);
     verify(service, times(3)).connect();
   }
 
@@ -176,7 +200,7 @@ public abstract class AbstractFailsafeTest {
       waiter.assertNull(r);
       waiter.assertEquals(failure, f);
       return false;
-    } , () -> service.connect()), Boolean.FALSE);
+    }, () -> service.connect()), Boolean.FALSE);
     verify(service).connect();
 
     // Given
@@ -189,7 +213,7 @@ public abstract class AbstractFailsafeTest {
       waiter.assertNull(r);
       waiter.assertEquals(failure, f);
       throw new RuntimeException(f);
-    } , () -> service.connect()), RuntimeException.class, ConnectException.class);
+    }, () -> service.connect()), RuntimeException.class, ConnectException.class);
     verify(service).connect();
   }
 
@@ -209,7 +233,7 @@ public abstract class AbstractFailsafeTest {
       waiter.assertNull(r);
       waiter.assertTrue(f instanceof CircuitBreakerOpenException);
       return false;
-    } , service::connect), Boolean.FALSE);
+    }, service::connect), Boolean.FALSE);
     verify(service, times(0)).connect();
   }
 
@@ -219,7 +243,8 @@ public abstract class AbstractFailsafeTest {
     } catch (ExecutionException e) {
       throw (RuntimeException) e.getCause();
     } catch (FailsafeException e) {
-      throw (RuntimeException) e.getCause();
+      RuntimeException cause = (RuntimeException) e.getCause();
+      throw cause == null ? e : cause;
     } catch (Exception e) {
       throw (RuntimeException) e;
     }

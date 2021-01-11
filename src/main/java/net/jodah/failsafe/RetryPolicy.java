@@ -1,3 +1,18 @@
+/*
+ * Copyright 2016 the original author or authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License
+ */
 package net.jodah.failsafe;
 
 import java.util.ArrayList;
@@ -83,6 +98,18 @@ public class RetryPolicy {
     Assert.notNull(resultPredicate, "resultPredicate");
     abortConditions.add(Predicates.resultPredicateFor(resultPredicate));
     return this;
+  }
+
+  /**
+   * Specifies when retries should be aborted. Any failure that is assignable from the {@code failure} will be result in
+   * retries being aborted.
+   * 
+   * @throws NullPointerException if {@code failure} is null
+   */
+  @SuppressWarnings({ "unchecked", "rawtypes" })
+  public RetryPolicy abortOn(Class<? extends Throwable> failure) {
+    Assert.notNull(failure, "failure");
+    return abortOn((List) Arrays.asList(failure));
   }
 
   /**
@@ -218,7 +245,7 @@ public class RetryPolicy {
   }
 
   /**
-   * Returns the jitter factor, else {@code 0.0} is none has been configured.
+   * Returns the jitter factor, else {@code 0.0} if none has been configured.
    * 
    * @see #withJitter(double)
    */
@@ -277,6 +304,17 @@ public class RetryPolicy {
     Assert.notNull(resultPredicate, "resultPredicate");
     retryConditions.add(Predicates.resultPredicateFor(resultPredicate));
     return this;
+  }
+
+  /**
+   * Specifies the failure to retry on. Any failure that is assignable from the {@code failure} will be retried.
+   * 
+   * @throws NullPointerException if {@code failure} is null
+   */
+  @SuppressWarnings({ "rawtypes", "unchecked" })
+  public RetryPolicy retryOn(Class<? extends Throwable> failure) {
+    Assert.notNull(failure, "failure");
+    return retryOn((List) Arrays.asList(failure));
   }
 
   /**
@@ -413,7 +451,8 @@ public class RetryPolicy {
    * 
    * @throws NullPointerException if {@code timeUnit} is null
    * @throws IllegalArgumentException if {@code jitter} is <= 0
-   * @throws IllegalStateException if no delay has been configured or {@link #withJitter(double)} has already been called
+   * @throws IllegalStateException if no delay has been configured or {@link #withJitter(double)} has already been
+   *           called
    */
   public RetryPolicy withJitter(long jitter, TimeUnit timeUnit) {
     Assert.notNull(timeUnit, "timeUnit");

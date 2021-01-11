@@ -10,7 +10,7 @@
 
   <groupId>net.jodah</groupId>
   <artifactId>failsafe</artifactId>
-  <version>0.9.5</version>
+  <version>1.0.5</version>
   <name>Failsafe</name>
   <url>http://github.com/jhalterman/failsafe/</url>
 
@@ -170,7 +170,7 @@
       <plugin>
         <groupId>org.jacoco</groupId>
         <artifactId>jacoco-maven-plugin</artifactId>
-        <version>0.7.2.201409121644</version>
+        <version>0.7.9</version>
         <executions>
           <execution>
             <id>prepare-agent</id>

@@ -1,3 +1,18 @@
+/*
+ * Copyright 2016 the original author or authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License
+ */
 package net.jodah.failsafe;
 
 import java.util.concurrent.TimeUnit;
@@ -17,7 +32,7 @@ abstract class AbstractExecution extends ExecutionContext {
   volatile boolean completed;
   volatile boolean retriesExceeded;
   volatile boolean success;
-  volatile long delayNanos;
+  volatile long delayNanos = -1;
   volatile long waitNanos;
 
   /**
@@ -30,7 +45,7 @@ abstract class AbstractExecution extends ExecutionContext {
     this.config = config;
     retryPolicy = config.retryPolicy;
     this.circuitBreaker = config.circuitBreaker;
-    waitNanos = delayNanos = retryPolicy.getDelay().toNanos();
+    waitNanos = retryPolicy.getDelay().toNanos();
   }
 
   /**
@@ -91,8 +106,10 @@ abstract class AbstractExecution extends ExecutionContext {
         circuitBreaker.recordSuccess();
     }
 
-    // Adjust the delay for backoffs
-    if (retryPolicy.getMaxDelay() != null)
+    // Initialize or adjust the delay for backoffs
+    if (delayNanos == -1)
+      delayNanos = retryPolicy.getDelay().toNanos();
+    else if (retryPolicy.getMaxDelay() != null)
       delayNanos = (long) Math.min(delayNanos * retryPolicy.getDelayFactor(), retryPolicy.getMaxDelay().toNanos());
 
     // Calculate the wait time with jitter
@@ -127,7 +144,7 @@ abstract class AbstractExecution extends ExecutionContext {
     if (isAbortable)
       config.handleAbort(result, failure, this);
     else {
-      if (retriesExceeded)
+      if (!success && retriesExceeded)
         config.handleRetriesExceeded(result, failure, this);
       if (completed)
         config.handleComplete(result, failure, this, success);

@@ -1,3 +1,18 @@
+/*
+ * Copyright 2016 the original author or authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License
+ */
 package net.jodah.failsafe;
 
 import java.util.ArrayList;
@@ -103,6 +118,17 @@ public class CircuitBreaker {
     return this;
   }
 
+  /**
+   * Specifies the type to fail on. Applies to any type that is assignable from the {@code failure}.
+   * 
+   * @throws NullPointerException if {@code failure} is null
+   */
+  @SuppressWarnings({ "unchecked", "rawtypes" })
+  public CircuitBreaker failOn(Class<? extends Throwable> failure) {
+    Assert.notNull(failure, "failure");
+    return failOn((List)Arrays.asList(failure));
+  }
+  
   /**
    * Specifies the types to fail on. Applies to any type that is assignable from the {@code failures}.
    * 
@@ -249,22 +275,25 @@ public class CircuitBreaker {
   /**
    * Calls the {@code runnable} when the circuit is closed.
    */
-  public void onClose(CheckedRunnable runnable) {
+  public CircuitBreaker onClose(CheckedRunnable runnable) {
     onClose = runnable;
+    return this;
   }
 
   /**
    * Calls the {@code runnable} when the circuit is half-opened.
    */
-  public void onHalfOpen(CheckedRunnable runnable) {
+  public CircuitBreaker onHalfOpen(CheckedRunnable runnable) {
     onHalfOpen = runnable;
+    return this;
   }
 
   /**
    * Calls the {@code runnable} when the circuit is opened.
    */
-  public void onOpen(CheckedRunnable runnable) {
+  public CircuitBreaker onOpen(CheckedRunnable runnable) {
     onOpen = runnable;
+    return this;
   }
 
   /**
@@ -336,7 +365,7 @@ public class CircuitBreaker {
   /**
    * Sets the ratio of successive failures that must occur when in a closed state in order to open the circuit. For
    * example: 5, 10 would open the circuit if 5 out of the last 10 executions result in a failure. The circuit will not
-   * be opened until at least {@code executions} executions have taken place.
+   * be opened until at least the given number of {@code executions} have taken place.
    * 
    * @param failures The number of failures that must occur in order to open the circuit
    * @param executions The number of executions to measure the {@code failures} against
@@ -366,7 +395,7 @@ public class CircuitBreaker {
   /**
    * Sets the ratio of successive successful executions that must occur when in a half-open state in order to close the
    * circuit. For example: 5, 10 would close the circuit if 5 out of the last 10 executions were successful. The circuit
-   * will not be closed until at least {@code executions} executions have taken place.
+   * will not be closed until at least the given number of {@code executions} have taken place.
    * 
    * @param successes The number of successful executions that must occur in order to open the circuit
    * @param executions The number of executions to measure the {@code successes} against

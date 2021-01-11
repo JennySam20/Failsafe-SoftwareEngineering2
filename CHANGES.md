@@ -1,3 +1,44 @@
+# 1.0.5
+
+### Bug Fixes
+
+* Issue #97 - Should not increment exponential backoff time on first attempt
+* Issue #92 - `handleRetriesExceeded` called incorrectly.
+
+# 1.0.4
+
+### API Changes
+
+* Asynchronous execution attempts no longer throw `CircuitBreakerOpenException` if a configured `CircuitBreaker` is open when an execution is first attempted. Instead, the resulting `Future` is completed exceptionally with `CircuitBreakerOpenException`. See [issue #84](https://github.com/jhalterman/failsafe/issues/84).
+
+### Improvements
+
+* Issue #81 - Added single argument failure configuration to avoid varargs related warnings.
+
+# 1.0.3
+
+### Bug Fixes
+
+* Fixed #76 - Make sure AsyncExecution.completeOrRetry is called when Error is thrown.
+
+# 1.0.2
+
+### Bug Fixes
+
+* Fixed #75 - Incorrect future completion when a fallback is present.
+
+# 1.0.1
+
+### Changes
+
+* `FailsafeException` now has public constructors, for easier mocking and testing.
+
+# 1.0.0
+
+### API Changes
+
+* Failsafe will now only throw `FailsafeException` when an execution fails with a checked `Exception`. See [issue #66](https://github.com/jhalterman/failsafe/issues/66) for details.
+
 # 0.9.5
 
 ### Bug Fixes
