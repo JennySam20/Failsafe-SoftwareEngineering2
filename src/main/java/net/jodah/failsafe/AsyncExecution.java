@@ -20,6 +20,7 @@ import net.jodah.failsafe.internal.util.Assert;
 import net.jodah.failsafe.util.concurrent.Scheduler;
 
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
@@ -35,22 +36,20 @@ public final class AsyncExecution extends AbstractExecution {
   private SettableSupplier<CompletableFuture<ExecutionResult>> innerExecutionSupplier;
   private Supplier<CompletableFuture<ExecutionResult>> outerExecutionSupplier;
   final FailsafeFuture<Object> future;
-  final Scheduler scheduler;
   private volatile boolean completeCalled;
   private volatile boolean retryCalled;
 
   @SuppressWarnings("unchecked")
   <T> AsyncExecution(Scheduler scheduler, FailsafeFuture<T> future, FailsafeExecutor<?> executor) {
-    super((FailsafeExecutor<Object>) executor);
-    this.scheduler = scheduler;
+    super(scheduler, (FailsafeExecutor<Object>) executor);
     this.future = (FailsafeFuture<Object>) future;
   }
 
-  void inject(Supplier<CompletableFuture<ExecutionResult>> supplier, boolean asyncExecution) {
+  void inject(Supplier<CompletableFuture<ExecutionResult>> syncSupplier, boolean asyncExecution) {
     if (!asyncExecution) {
-      outerExecutionSupplier = supplier;
+      outerExecutionSupplier = Functions.getPromiseAsync(syncSupplier, scheduler, future);
     } else {
-      outerExecutionSupplier = innerExecutionSupplier = Functions.settableSupplierOf(supplier);
+      outerExecutionSupplier = innerExecutionSupplier = Functions.toSettableSupplier(syncSupplier);
     }
 
     for (PolicyExecutor<Policy<Object>> policyExecutor : policyExecutors)
@@ -73,7 +72,8 @@ public final class AsyncExecution extends AbstractExecution {
    * @throws IllegalStateException if the execution is already complete
    */
   public boolean complete(Object result) {
-    return postExecute(new ExecutionResult(result, null));
+    postExecute(new ExecutionResult(result, null));
+    return completed;
   }
 
   /**
@@ -87,12 +87,14 @@ public final class AsyncExecution extends AbstractExecution {
    * @throws IllegalStateException if the execution is already complete
    */
   public boolean complete(Object result, Throwable failure) {
-    return postExecute(new ExecutionResult(result, failure));
+    postExecute(new ExecutionResult(result, failure));
+    return completed;
   }
 
   /**
-   * Records an execution and returns true if a retry has been scheduled for else returns returns false and completes
-   * the execution and associated {@code CompletableFuture}.
+   * Records an execution if one has not been recorded yet, attempts to schedule a retry if necessary, and returns
+   * {@code true} if a retry has been scheduled else returns {@code false} and completes the execution and associated
+   * {@code CompletableFuture}.
    *
    * @throws IllegalStateException if a retry method has already been called or the execution is already complete
    */
@@ -101,8 +103,9 @@ public final class AsyncExecution extends AbstractExecution {
   }
 
   /**
-   * Records an execution and returns true if a retry has been scheduled for the {@code result}, else returns false and
-   * marks the execution and associated {@code CompletableFuture} as complete.
+   * Records an execution if one has not been recorded yet for the {@code result}, attempts to schedule a retry if
+   * necessary, and returns {@code true} if a retry has been scheduled else returns {@code false} and completes the
+   * execution and associated {@code CompletableFuture}.
    *
    * @throws IllegalStateException if a retry method has already been called or the execution is already complete
    */
@@ -111,8 +114,9 @@ public final class AsyncExecution extends AbstractExecution {
   }
 
   /**
-   * Records an execution and returns true if a retry has been scheduled for the {@code result} or {@code failure}, else
-   * returns false and marks the execution and associated {@code CompletableFuture} as complete.
+   * Records an execution if one has not been recorded yet for the {@code result} or {@code failure}, attempts to
+   * schedule a retry if necessary, and returns {@code true} if a retry has been scheduled else returns {@code false}
+   * and completes the execution and associated {@code CompletableFuture}.
    *
    * @throws IllegalStateException if a retry method has already been called or the execution is already complete
    */
@@ -137,10 +141,16 @@ public final class AsyncExecution extends AbstractExecution {
   /**
    * Prepares for an execution by resetting internal flags.
    */
+  @Override
   void preExecute() {
     super.preExecute();
     completeCalled = false;
     retryCalled = false;
+  }
+
+  @Override
+  boolean isAsyncExecution() {
+    return innerExecutionSupplier != null;
   }
 
   /**
@@ -150,16 +160,17 @@ public final class AsyncExecution extends AbstractExecution {
    * @throws IllegalStateException if the execution is already complete
    */
   @Override
-  boolean postExecute(ExecutionResult result) {
+  ExecutionResult postExecute(ExecutionResult result) {
     synchronized (future) {
       if (!completeCalled) {
-        if (super.postExecute(result))
+        result = super.postExecute(result);
+        if (completed)
           complete(result, null);
         completeCalled = true;
         resultHandled = true;
       }
 
-      return completed;
+      return result;
     }
   }
 
@@ -171,7 +182,7 @@ public final class AsyncExecution extends AbstractExecution {
   @SuppressWarnings("unchecked")
   void executeAsync(boolean asyncExecution) {
     if (!asyncExecution)
-      Functions.makeAsync(outerExecutionSupplier, scheduler, future).get().whenComplete(this::complete);
+      outerExecutionSupplier.get().whenComplete(this::complete);
     else
       future.inject((Future) scheduler.schedule(innerExecutionSupplier::get, 0, TimeUnit.NANOSECONDS));
   }
@@ -185,7 +196,7 @@ public final class AsyncExecution extends AbstractExecution {
    */
   boolean completeOrHandle(Object result, Throwable failure) {
     synchronized (future) {
-      ExecutionResult er = new ExecutionResult(result, failure);
+      ExecutionResult er = new ExecutionResult(result, failure).withWaitNanos(waitNanos);
       if (!completeCalled)
         record(er);
       completeCalled = true;
@@ -200,12 +211,14 @@ public final class AsyncExecution extends AbstractExecution {
       return;
 
     completed = true;
-    if (!future.isDone() && !future.isCancelled()) {
-      if (result != null) {
-        future.complete(result.getResult(), result.getFailure());
-        executor.handleComplete(result, this);
-      } else
-        future.complete(null, error);
+    if (!future.isDone()) {
+      if (result != null)
+        future.completeResult(result);
+      else {
+        if (error instanceof CompletionException)
+          error = error.getCause();
+        future.completeResult(ExecutionResult.failure(error));
+      }
     }
   }
 }

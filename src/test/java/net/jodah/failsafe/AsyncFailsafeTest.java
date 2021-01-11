@@ -15,7 +15,6 @@
  */
 package net.jodah.failsafe;
 
-import net.jodah.concurrentunit.Waiter;
 import net.jodah.failsafe.Testing.ConnectException;
 import net.jodah.failsafe.Testing.Service;
 import net.jodah.failsafe.function.*;
@@ -26,27 +25,28 @@ import java.time.Duration;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 import static net.jodah.failsafe.Asserts.assertThrows;
 import static net.jodah.failsafe.Asserts.matches;
 import static net.jodah.failsafe.Testing.failures;
+import static net.jodah.failsafe.Testing.unwrapExceptions;
 import static org.mockito.Mockito.*;
 import static org.testng.Assert.*;
 
 @Test
 public class AsyncFailsafeTest extends AbstractFailsafeTest {
   private ScheduledExecutorService executor = Executors.newScheduledThreadPool(5);
-  private Waiter waiter;
 
   // Results from a getAsync against a future that wraps an asynchronous Failsafe call
   private @SuppressWarnings("unchecked") Class<? extends Throwable>[] futureAsyncThrowables = new Class[] {
-      ExecutionException.class, ConnectException.class };
+    ExecutionException.class, ConnectException.class };
 
   @BeforeMethod
   protected void beforeMethod() {
     reset(service);
-    waiter = new Waiter();
     counter = new AtomicInteger();
   }
 
@@ -243,13 +243,106 @@ public class AsyncFailsafeTest extends AbstractFailsafeTest {
     }));
   }
 
-  private void assertCancel(Function<FailsafeExecutor<?>, Future<?>> executorCallable) throws Throwable {
+  /**
+   * Asserts that an externally completed FailsafeFuture causes completion listeners to be called.
+   */
+  public void shouldCompleteFutureExternally() throws Throwable {
     // Given
-    Future<?> future = executorCallable.apply(Failsafe.with(retryAlways).with(executor).onComplete(e -> {
-      waiter.assertNull(e.getResult());
-      waiter.assertTrue(e.getFailure() instanceof CancellationException);
+    CompletableFuture<Boolean> future1 = Failsafe.with(retryNever).onSuccess(e -> {
+      waiter.assertFalse(e.getResult());
       waiter.resume();
-    }));
+    }).getAsync(() -> {
+      waiter.resume();
+      Thread.sleep(500);
+      return true;
+    });
+    waiter.await(1000);
+
+    // When completed
+    future1.complete(false);
+
+    // Then
+    assertFalse(future1.get());
+    waiter.await(1000);
+
+    // Given
+    CompletableFuture<Boolean> future2 = Failsafe.with(retryNever).onFailure(e -> {
+      waiter.assertTrue(e.getFailure() instanceof IllegalArgumentException);
+      waiter.resume();
+    }).getAsync(() -> {
+      waiter.resume();
+      Thread.sleep(500);
+      return true;
+    });
+    waiter.await(1000);
+
+    // When completed exceptionally
+    future2.completeExceptionally(new IllegalArgumentException());
+
+    // Then
+    assertThrows(() -> unwrapExceptions(future2::get), IllegalArgumentException.class);
+    waiter.await(1000);
+  }
+
+  /**
+   * Tests a scenario where three timeouts should cause all delegates to be cancelled with interrupts.
+   */
+  public void shouldCancelNestedTimeoutsWithInterupt() throws Throwable {
+    // Given
+    RetryPolicy<Boolean> rp = new RetryPolicy<Boolean>().withMaxRetries(2);
+    Timeout<Boolean> timeout1 = Timeout.of(Duration.ofMillis(1000));
+    Timeout<Boolean> timeout2 = Timeout.<Boolean>of(Duration.ofMillis(200)).withCancel(true);
+    AtomicReference<FailsafeFuture<Boolean>> futureRef = new AtomicReference<>();
+    CountDownLatch futureLatch = new CountDownLatch(1);
+
+    // When
+    FailsafeFuture<Boolean> future = (FailsafeFuture<Boolean>) Failsafe.with(rp, timeout2, timeout1).onComplete(e -> {
+      waiter.assertNull(e.getResult());
+      waiter.assertTrue(e.getFailure() instanceof TimeoutExceededException);
+      waiter.resume();
+    }).getAsync(ctx -> {
+      // Wait for futureRef to be set
+      futureLatch.await();
+      waiter.assertTrue(ctx.getLastFailure() == null || ctx.getLastFailure() instanceof TimeoutExceededException);
+      Consumer<Boolean> asserts = (expected) -> {
+        waiter.assertEquals(expected, ctx.isCancelled());
+        waiter.assertEquals(expected, futureRef.get().getDelegate().isCancelled());
+        if (!futureRef.get().getTimeoutDelegates().isEmpty())
+          waiter.assertEquals(expected, futureRef.get().getTimeoutDelegates().stream().allMatch(Future::isCancelled));
+      };
+
+      try {
+        // Assert not cancelled
+        asserts.accept(false);
+        Thread.sleep(1000);
+      } catch (InterruptedException e) {
+        // Assert cancelled
+        asserts.accept(true);
+        waiter.resume();
+        throw e;
+      }
+      waiter.fail("Expected interruption");
+      return false;
+    });
+    futureRef.set(future);
+    futureLatch.countDown();
+
+    // Then
+    waiter.await(1000, 4);
+    assertFalse(future.isCancelled());
+    assertTrue(future.isDone());
+    assertThrows(future::get, ExecutionException.class, TimeoutExceededException.class);
+  }
+
+  private void assertCancel(Function<FailsafeExecutor<?>, Future<?>> executorCallable, Policy<?> policy)
+    throws Throwable {
+    // Given
+    FailsafeFuture<?> future = (FailsafeFuture<?>) executorCallable.apply(
+      Failsafe.with(policy).with(executor).onComplete(e -> {
+        waiter.assertNull(e.getResult());
+        waiter.assertTrue(e.getFailure() instanceof CancellationException);
+        waiter.resume();
+      }));
 
     Testing.sleep(300);
 
@@ -259,15 +352,31 @@ public class AsyncFailsafeTest extends AbstractFailsafeTest {
 
     // Then
     assertTrue(future.isCancelled());
+    assertTrue(future.getDelegate().isCancelled());
+    assertTrue(
+      future.getTimeoutDelegates() == null || future.getTimeoutDelegates().stream().allMatch(Future::isCancelled));
     assertTrue(future.isDone());
-    Asserts.assertThrows(future::get, CancellationException.class);
+    assertThrows(future::get, CancellationException.class);
   }
 
   public void shouldCancelOnGetAsync() throws Throwable {
+    assertCancel(executor -> getAsync(executor, (ContextualSupplier<?>) ctx -> {
+      try {
+        waiter.assertFalse(ctx.isCancelled());
+        Thread.sleep(1000);
+      } catch (InterruptedException e) {
+        waiter.assertTrue(ctx.isCancelled());
+        throw e;
+      }
+      return "test";
+    }), retryAlways);
+  }
+
+  public void shouldCancelOnGetAsyncWithTimeout() throws Throwable {
     assertCancel(executor -> getAsync(executor, (CheckedSupplier<?>) () -> {
       Thread.sleep(1000);
       return "test";
-    }));
+    }), Timeout.of(Duration.ofMinutes(1)));
   }
 
   public void shouldCancelOnGetAsyncExecution() throws Throwable {
@@ -275,27 +384,27 @@ public class AsyncFailsafeTest extends AbstractFailsafeTest {
       Thread.sleep(1000);
       e.complete();
       return null;
-    }));
+    }), retryAlways);
   }
 
   public void shouldCancelOnRunAsync() throws Throwable {
     assertCancel(executor -> runAsync(executor, (CheckedRunnable) () -> {
       Thread.sleep(1000);
-    }));
+    }), retryAlways);
   }
 
   public void shouldCancelOnRunAsyncExecution() throws Throwable {
     assertCancel(executor -> runAsync(executor, (AsyncRunnable) (e) -> {
       Thread.sleep(1000);
       e.complete();
-    }));
+    }), retryAlways);
   }
 
   public void shouldCancelOnGetStageAsync() throws Throwable {
     assertCancel(executor -> getStageAsync(executor, (CheckedSupplier<?>) () -> {
       Thread.sleep(1000);
       return CompletableFuture.completedFuture("test");
-    }));
+    }), retryAlways);
   }
 
   public void shouldCancelOnGetStageAsyncExecution() throws Throwable {
@@ -304,7 +413,7 @@ public class AsyncFailsafeTest extends AbstractFailsafeTest {
       CompletableFuture<?> result = CompletableFuture.completedFuture("test");
       e.complete(result);
       return result;
-    }));
+    }), retryAlways);
   }
 
   public void shouldManuallyRetryAndComplete() throws Throwable {
@@ -345,14 +454,14 @@ public class AsyncFailsafeTest extends AbstractFailsafeTest {
   public void shouldHandleCompletedExceptionallyGetStageAsync() {
     CompletableFuture<Boolean> failedFuture = new CompletableFuture<>();
     failedFuture.completeExceptionally(new IllegalArgumentException());
-    assertThrows(() -> Failsafe.with(retryTwice).getStageAsync(() -> failedFuture).get(),
-            ExecutionException.class, IllegalArgumentException.class);
+    assertThrows(() -> Failsafe.with(retryTwice).getStageAsync(() -> failedFuture).get(), ExecutionException.class,
+      IllegalArgumentException.class);
 
-    assertThrows(() -> Failsafe.with(retryTwice).getStageAsync(context -> failedFuture).get(),
-            ExecutionException.class, IllegalArgumentException.class);
+    assertThrows(() -> Failsafe.with(retryTwice).getStageAsync(context -> failedFuture).get(), ExecutionException.class,
+      IllegalArgumentException.class);
 
     assertThrows(() -> Failsafe.with(retryTwice).getStageAsyncExecution(exec -> failedFuture).get(),
-            ExecutionException.class, IllegalArgumentException.class);
+      ExecutionException.class, IllegalArgumentException.class);
   }
 
   /**
@@ -371,14 +480,34 @@ public class AsyncFailsafeTest extends AbstractFailsafeTest {
     waiter.await(5000);
   }
 
+  public void shouldTimeoutAndRetry() throws Throwable {
+    // Given
+    RetryPolicy<Object> rp = new RetryPolicy<>().withMaxRetries(2).handleResult(false);
+    Timeout<Object> timeout = Timeout.of(Duration.ofMillis(1));
+
+    // When / Then
+    Failsafe.with(rp, timeout).onComplete(e -> {
+      assertNull(e.getResult());
+      assertTrue(e.getFailure() instanceof TimeoutExceededException);
+      waiter.resume();
+    }).runAsyncExecution(exec -> {
+      Thread.sleep(100);
+      if (!exec.complete(false))
+        exec.retry();
+    });
+
+    waiter.await(1000);
+  }
+
   public void shouldOpenCircuitWhenTimeoutExceeded() throws Throwable {
     // Given
-    CircuitBreaker<Object> breaker = new CircuitBreaker<>().withTimeout(Duration.ofMillis(10));
+    Timeout<Object> timeout = Timeout.of(Duration.ofMillis(10));
+    CircuitBreaker<Object> breaker = new CircuitBreaker<>();
     assertTrue(breaker.isClosed());
 
     // When
-    Failsafe.with(breaker).with(executor).runAsyncExecution(exec -> {
-      Thread.sleep(20);
+    Failsafe.with(breaker, timeout).with(executor).runAsyncExecution(exec -> {
+      Thread.sleep(100);
       exec.complete();
       waiter.resume();
     });
@@ -412,8 +541,8 @@ public class AsyncFailsafeTest extends AbstractFailsafeTest {
 
     // When
     Future future = Failsafe.with(Fallback.of(false), new RetryPolicy<>(), new CircuitBreaker<>())
-        .with(executor)
-        .runAsync(() -> waiter.fail("Should not execute supplier since executor has been shutdown"));
+      .with(executor)
+      .runAsync(() -> waiter.fail("Should not execute supplier since executor has been shutdown"));
 
     assertThrows(future::get, ExecutionException.class, RejectedExecutionException.class);
   }
@@ -428,12 +557,12 @@ public class AsyncFailsafeTest extends AbstractFailsafeTest {
 
     // When
     Future future = Failsafe.with(new RetryPolicy<>().handleResult(null).handle(Exception.class))
-        .with(executor)
-        .getAsync(() -> {
-          counter.incrementAndGet();
-          Thread.sleep(200);
-          return null;
-        });
+      .with(executor)
+      .getAsync(() -> {
+        counter.incrementAndGet();
+        Thread.sleep(200);
+        return null;
+      });
 
     Thread.sleep(150);
     executor.shutdownNow();
@@ -441,7 +570,7 @@ public class AsyncFailsafeTest extends AbstractFailsafeTest {
     assertEquals(counter.get(), 1, "Supplier should have been executed before executor was shutdown");
   }
 
-  private void assertInterruptedExecptionOnCancel(FailsafeExecutor<Boolean> failsafe) throws Throwable {
+  private void assertInterruptedExceptionOnCancel(FailsafeExecutor<Boolean> failsafe) throws Throwable {
     CompletableFuture<Void> future = failsafe.runAsync(() -> {
       try {
         Thread.sleep(1000);
@@ -457,24 +586,24 @@ public class AsyncFailsafeTest extends AbstractFailsafeTest {
   }
 
   public void shouldInterruptExecutionOnCancelWithForkJoinPool() throws Throwable {
-    assertInterruptedExecptionOnCancel(Failsafe.with(retryAlways));
+    assertInterruptedExceptionOnCancel(Failsafe.with(retryAlways));
   }
 
   public void shouldInterruptExecutionOnCancelWithScheduledExecutorService() throws Throwable {
-    assertInterruptedExecptionOnCancel(Failsafe.with(retryAlways).with(executor));
+    assertInterruptedExceptionOnCancel(Failsafe.with(retryAlways).with(executor));
   }
 
   public void shouldInterruptExecutionOnCancelWithExecutorService() throws Throwable {
     ExecutorService executorService = Executors.newSingleThreadScheduledExecutor();
-    assertInterruptedExecptionOnCancel(Failsafe.with(retryAlways).with(executorService));
+    assertInterruptedExceptionOnCancel(Failsafe.with(retryAlways).with(executorService));
   }
 
   @SuppressWarnings("unused")
   public void shouldSupportCovariance() {
     FastService fastService = mock(FastService.class);
     CompletionStage<Service> stage = Failsafe.with(new RetryPolicy<Service>())
-        .with(executor)
-        .getAsync(() -> fastService);
+      .with(executor)
+      .getAsync(() -> fastService);
   }
 
   private Future<?> runAsync(FailsafeExecutor<?> failsafe, Object runnable) {

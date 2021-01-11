@@ -1,3 +1,123 @@
+# 2.4.0
+
+### Improvements
+
+- Added time based thresholding support to `CircuitBreaker` via:
+  - `withFailureThreshold(int failureThreshold, Duration failureThresholdingPeriod)`
+  - `withFailureThreshold(int failureThreshold, int failureExecutionThreshold, Duration failureThresholdingPeriod)`
+  - `withFailureRateThreshold(int failureRateThreshold, int failureExecutionThreshold, Duration failureThresholdingPeriod)`
+- Added getters to `CircuitBreaker` for existing count based thresholding settings:
+  - `getFailureThresholdingCapacity()`
+  - `getSuccessThresholdingCapacity()`
+- And added getters to `CircuitBreaker` for new time based thresholding settings:
+  - `getFailureRateThreshold()`
+  - `getFailureExecutionThreshold()`
+  - `getFailureThresholdingPeriod()` 
+- Added some new metrics to `CircuitBreaker`:
+  - `getSuccessRate()`
+  - `getFailureRate()`
+  - `getExecutionCount()` 
+
+### API Changes
+
+- Changed the return type of `CircuitBreaker`'s `getFailureThreshold()` and `getSuccessThreshold()` from `Ratio` to `int`. `getFailureThresholdingCapacity`, `getFailureRateThreshold`, `getFailureExecutionThreshold`, and `getSuccessThresholdingCapacity` provide additional detail about thresholding configuration.
+- Removed support for the previously deprecated `CircuitBreaker.withTimeout`. The `Timeout` policy should be used instead.
+
+# 2.3.5
+
+### Bug Fixes
+
+- Fixed #242 - Delays not occurring between manually triggered async execution retries.
+
+# 2.3.4
+
+### Improvements
+
+- Re-worked internal threading to only create async threads immediately prior to supplier execution. See #230.
+
+### Bug Fixes
+
+- Fixed #240 - `handleResult(null)` always triggering when an exception is thrown.
+
+# 2.3.3
+
+### Improvements
+
+Added support for `CompletionStage` to the `Fallback` policy.
+
+### Bug Fixes
+
+- Fixed #224 - Allow combining random delay and jitter.
+
+### API Changes
+
+- `Fallback.apply` was made package private.
+- `DelayablePolicy.computeDelay` was made package private.
+
+# 2.3.2
+
+### Improvements
+
+- Added `CircuitBreaker.getRemainingDelay()`.
+- Added support for `Fallback.VOID`.
+
+### Bug Fixes
+
+- Fixed #216 - Incorrect computation of randomDelay.
+
+# 2.3.1
+
+### Improvements
+
+- Set `setRemoveOnCancelPolicy(true)` for the internal delay scheduler.
+- Added `Scheduler.DEFAULT` to return the default scheduler Failsafe uses.
+
+### Bug Fixes
+
+- Fixed #206 - Problem with Fallback converting from failure to success.
+
+# 2.3.0
+
+### Behavior Changes
+
+- `FailsafeExecutor.get` and `FailsafeExecutor.run` will no longer wrap `Error` instances in `FailsafeException` before throwing.
+
+### Bug Fixes
+
+- Fixed potential race between `Timeout` interrupts and execution completion.
+
+# 2.2.0
+
+### Improvements
+
+- Added a new `Timeout` policy that fails with `TimeoutExceededException`.
+- Added `ExecutionContext.isCancelled()`.
+- Added `ExecutionContext.getElapsedAttemptTime()`.
+- Made the internal delay scheduler more adaptive.
+
+### API Changes
+
+- Deprecated `CircuitBreaker.withTimeout` in favor of using a separate `Timeout` policy.
+
+### Bug Fixes
+
+- Reset interrupt flag when a synchronous execution is interrupted.
+- Improved handling around externally completing a Failsafe `CompletableFuture`.
+
+# 2.1.1
+
+### Improvements
+
+- Added support for `CircuitBreaker.withDelay(DelayFunction)`
+- Added `Fallback.ofException` for returning custom exceptions.
+- Added `ExecutionContext.getLastResult` and `.getLastFailure` to support retries that depend on previous executions
+- Added `CircuitBreakerOpenException.getCircuitBreaker`
+
+### API Changes
+
+- `RetryPolicy.DelayedFunction` was moved to the `net.jodah.failsafe.function` package.
+- Removed `RetryPolicy.canApplyDelayFn`
+
 # 2.1.0
 
 ### Improvements
@@ -5,15 +125,15 @@
 - Added support for `Failsafe.with(List<Policy<R>>)`.
 - Allow `null` `Fallback` values.
 
+### Behavior Changes
+
+- A [standalone](https://github.com/jhalterman/failsafe#execution-tracking) or [async execution](https://github.com/jhalterman/failsafe#asynchronous-api-integration) will only be marked as complete when all policies are complete. `Execution.isComplete` reflects this. 
+
 ### Bug Fixes
 
 - Issue #190 - Failure listener called on success for async executions.
 - Issue #191 - Add missing listeners to RetryPolicy copy constructor.
 - Issue #192 - Problem with detecting completion when performing async execution.
-
-### Behavior Changes
-
-- A [standalone](https://github.com/jhalterman/failsafe#execution-tracking) or [async execution](https://github.com/jhalterman/failsafe#asynchronous-api-integration) will only be marked as complete when all policies are complete. `Execution.isComplete` reflects this. 
 
 # 2.0.1
 
@@ -55,10 +175,15 @@ Failsafe 2.0 includes a few API changes from 1.x that were meant to consolidate 
   - Some of the time related policy configurations have been changed to use `Duration` instead of `long` + `TimeUnit`.
 - Policy configuration
   - Multiple policies can no longer be configured by chaining multiple `Failsafe.with` calls. Instead they must be supplied in a single `Failsafe.with` call. This is was intentional to require users to consider the ordering of composed policies. See the README section on [policy composition](README.md#policy-composition) for more details.
+- RetryPoilicy
+  - The `retryOn`, `retryIf`, and `retryWhen` methods have been replace with `handleOn`, etc.
+- CircuitBreaker
+  - The `failOn`, `failIf`, and `failWhen` methods have been replace with `handleOn`, etc.
 - Fallbacks
   - Fallbacks must be wrapped in a `Fallback` instance via `Fallback.of`
 - Failsafe APIs
   - `Supplier`s are now used instead of `Callable`s.
+  - `java.util.function.Predicate` is used instead of Failsafe's internal Predicate.
   - `withFallback` is no longer supported. Instead, `Failsafe.with(fallback...)` should be used.
 - Async execution
   - Async execution is now performed with the `getAsync`, `runAsync`, `getStageAsync`, etc. methods.

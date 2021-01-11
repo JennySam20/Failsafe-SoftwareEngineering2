@@ -17,22 +17,22 @@ package net.jodah.failsafe.internal;
 
 import net.jodah.failsafe.CircuitBreaker;
 import net.jodah.failsafe.CircuitBreaker.State;
-import net.jodah.failsafe.internal.util.CircularBitSet;
-import net.jodah.failsafe.util.Ratio;
+import net.jodah.failsafe.ExecutionContext;
 
 public class HalfOpenState extends CircuitState {
-  private final CircuitBreaker circuit;
+  private final CircuitBreakerInternals internals;
 
-  public HalfOpenState(CircuitBreaker circuit) {
-    this.circuit = circuit;
-    setSuccessThreshold(circuit.getSuccessThreshold() != null ?
-        circuit.getSuccessThreshold() :
-        circuit.getFailureThreshold() != null ? circuit.getFailureThreshold() : ONE_OF_ONE);
+  public HalfOpenState(CircuitBreaker breaker, CircuitBreakerInternals internals) {
+    super(breaker, CircuitStats.create(breaker, capacityFor(breaker), false, null));
+    this.internals = internals;
   }
 
+  /**
+   * Ensures that the current executions are less than the thresholding capacity.
+   */
   @Override
-  public boolean allowsExecution(CircuitBreakerStats stats) {
-    return stats.getCurrentExecutions() < maxConcurrentExecutions();
+  public boolean allowsExecution() {
+    return internals.getCurrentExecutions() < capacityFor(breaker);
   }
 
   @Override
@@ -41,75 +41,57 @@ public class HalfOpenState extends CircuitState {
   }
 
   @Override
-  public synchronized void recordFailure() {
-    bitSet.setNext(false);
-    checkThreshold();
-  }
-
-  @Override
-  public synchronized void recordSuccess() {
-    bitSet.setNext(true);
-    checkThreshold();
-  }
-
-  @Override
-  public void setFailureThreshold(Ratio threshold) {
-    if (circuit.getSuccessThreshold() == null)
-      bitSet = new CircularBitSet(threshold.getDenominator(), bitSet);
-  }
-
-  @Override
-  public void setSuccessThreshold(Ratio threshold) {
-    bitSet = new CircularBitSet(threshold.getDenominator(), bitSet);
+  public synchronized void handleConfigChange() {
+    stats = CircuitStats.create(breaker, capacityFor(breaker), false, stats);
   }
 
   /**
    * Checks to determine if a threshold has been met and the circuit should be opened or closed.
    *
    * <p>
-   * If a success ratio is configured, the circuit is opened or closed after the expected number of executions based on
-   * whether the ratio was exceeded.
+   * If a success threshold is configured, the circuit is opened or closed based on whether the ratio was exceeded.
    * <p>
-   * Else if a failure ratio is configured, the circuit is opened or closed after the expected number of executions
-   * based on whether the ratio was not exceeded.
-   * <p>
-   * Else when no thresholds are configured, the circuit opens or closes on a single failure or success.
+   * Else the circuit is opened or closed based on whether the failure threshold was exceeded.
    */
-  synchronized void checkThreshold() {
-    Ratio successRatio = circuit.getSuccessThreshold();
-    Ratio failureRatio = circuit.getFailureThreshold();
+  @Override
+  synchronized void checkThreshold(ExecutionContext context) {
+    boolean successesExceeded;
+    boolean failuresExceeded;
 
-    if (successRatio != null) {
-      if (bitSet.occupiedBits() == successRatio.getDenominator() || (successRatio.getValue() == 1.0
-          && bitSet.positiveRatioValue() < 1.0))
-        if (bitSet.positiveRatioValue() >= successRatio.getValue())
-          circuit.close();
-        else
-          circuit.open();
-    } else if (failureRatio != null) {
-      if (bitSet.occupiedBits() == failureRatio.getDenominator() || (failureRatio.getValue() == 1.0
-          && bitSet.negativeRatioValue() < 1.0))
-        if (bitSet.negativeRatioValue() >= failureRatio.getValue())
-          circuit.open();
-        else
-          circuit.close();
+    int successThreshold = breaker.getSuccessThreshold();
+    if (successThreshold != 0) {
+      int successThresholdingCapacity = breaker.getSuccessThresholdingCapacity();
+      successesExceeded = stats.getSuccessCount() >= successThreshold;
+      failuresExceeded = stats.getFailureCount() > successThresholdingCapacity - successThreshold;
     } else {
-      if (bitSet.positiveRatioValue() == 1)
-        circuit.close();
-      else
-        circuit.open();
+      int failureRateThreshold = breaker.getFailureRateThreshold();
+      if (failureRateThreshold != 0) {
+        boolean executionThresholdExceeded = stats.getExecutionCount() >= breaker.getFailureExecutionThreshold();
+        failuresExceeded = executionThresholdExceeded && stats.getFailureRate() >= failureRateThreshold;
+        successesExceeded = executionThresholdExceeded && stats.getSuccessRate() > 100 - failureRateThreshold;
+      } else {
+        int failureThresholdingCapacity = breaker.getFailureThresholdingCapacity();
+        int failureThreshold = breaker.getFailureThreshold();
+        failuresExceeded = stats.getFailureCount() >= failureThreshold;
+        successesExceeded = stats.getSuccessCount() > failureThresholdingCapacity - failureThreshold;
+      }
     }
+
+    if (successesExceeded)
+      breaker.close();
+    else if (failuresExceeded)
+      internals.open(context);
   }
 
   /**
-   * Returns the max allowed concurrent executions.
+   * Returns the capacity of the breaker in the half-open state.
    */
-  int maxConcurrentExecutions() {
-    if (circuit.getSuccessThreshold() != null)
-      return circuit.getSuccessThreshold().getDenominator();
-    else if (circuit.getFailureThreshold() != null)
-      return circuit.getFailureThreshold().getDenominator();
-    else
-      return 1;
+  private static int capacityFor(CircuitBreaker<?> breaker) {
+    int capacity = breaker.getSuccessThresholdingCapacity();
+    if (capacity == 0)
+      capacity = breaker.getFailureExecutionThreshold();
+    if (capacity == 0)
+      capacity = breaker.getFailureThresholdingCapacity();
+    return capacity;
   }
 }

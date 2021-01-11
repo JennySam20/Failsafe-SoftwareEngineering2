@@ -17,6 +17,7 @@ package net.jodah.failsafe.internal;
 
 import net.jodah.failsafe.CircuitBreaker;
 import net.jodah.failsafe.CircuitBreaker.State;
+import net.jodah.failsafe.Testing;
 import org.testng.annotations.Test;
 
 import java.time.Duration;
@@ -29,15 +30,44 @@ public class OpenStateTest {
     // Given
     CircuitBreaker breaker = new CircuitBreaker().withDelay(Duration.ofMillis(100));
     breaker.open();
-    OpenState state = new OpenState(breaker, new ClosedState(breaker));
+    OpenState state = new OpenState(breaker, new ClosedState(breaker, Testing.getInternals(breaker)), breaker.getDelay());
     assertTrue(breaker.isOpen());
-    assertFalse(state.allowsExecution(null));
+    assertFalse(state.allowsExecution());
 
     // When
     Thread.sleep(110);
 
     // Then
-    assertTrue(state.allowsExecution(null));
+    assertTrue(state.allowsExecution());
     assertEquals(breaker.getState(), State.HALF_OPEN);
+  }
+
+  public void testRemainingDelay() throws Throwable {
+    // Given
+    CircuitBreaker breaker = new CircuitBreaker().withDelay(Duration.ofSeconds(1));
+    OpenState state = new OpenState(breaker, new ClosedState(breaker, Testing.getInternals(breaker)), breaker.getDelay());
+
+    // When / Then
+    long remainingDelayMillis = state.getRemainingDelay().toMillis();
+    assertTrue(remainingDelayMillis < 1000);
+    assertTrue(remainingDelayMillis > 0);
+
+    Thread.sleep(110);
+    remainingDelayMillis = state.getRemainingDelay().toMillis();
+    assertTrue(remainingDelayMillis < 900);
+    assertTrue(remainingDelayMillis > 0);
+  }
+
+  public void testNoRemainingDelay() throws Throwable {
+    // Given
+    CircuitBreaker breaker = new CircuitBreaker().withDelay(Duration.ofMillis(10));
+    assertEquals(breaker.getRemainingDelay(), Duration.ZERO);
+
+    // When
+    OpenState state = new OpenState(breaker, new ClosedState(breaker, Testing.getInternals(breaker)), breaker.getDelay());
+    Thread.sleep(50);
+
+    // Then
+    assertEquals(state.getRemainingDelay().toMillis(), 0);
   }
 }

@@ -56,7 +56,7 @@ public class AsyncExecutionTest {
     assertTrue(exec.isComplete());
     assertNull(exec.getLastResult());
     assertNull(exec.getLastFailure());
-    verify(future).complete(null, null);
+    verify(future).completeResult(ExecutionResult.NONE);
   }
 
   public void testCompleteForResult() {
@@ -73,13 +73,13 @@ public class AsyncExecutionTest {
     assertTrue(exec.isComplete());
     assertEquals(exec.getLastResult(), Boolean.TRUE);
     assertNull(exec.getLastFailure());
-    verify(future).complete(true, null);
+    verify(future).completeResult(ExecutionResult.success(true));
   }
 
   public void testGetAttemptCount() {
     // Given
     exec = new AsyncExecution(scheduler, future, executorFor(new RetryPolicy<>()));
-    exec.inject(Functions.promiseOf(() -> null, exec), true);
+    exec.inject(Functions.getPromise(ctx -> null, exec), true);
 
     // When
     exec.retryOn(e);
@@ -93,7 +93,7 @@ public class AsyncExecutionTest {
   public void testRetryForResult() {
     // Given rpRetry for null
     exec = new AsyncExecution(scheduler, future, executorFor(new RetryPolicy<>().handleResult(null)));
-    exec.inject(Functions.promiseOf(() -> null, exec), true);
+    exec.inject(Functions.getPromise(ctx -> null, exec), true);
 
     // When / Then
     assertFalse(exec.complete(null));
@@ -108,11 +108,11 @@ public class AsyncExecutionTest {
     assertEquals(exec.getLastResult(), Integer.valueOf(1));
     assertNull(exec.getLastFailure());
     verifyScheduler(1);
-    verify(future).complete(1, null);
+    verify(future).completeResult(ExecutionResult.success(1));
 
     // Given 2 max retries
     exec = new AsyncExecution(scheduler, future, executorFor(new RetryPolicy<>().handleResult(null).withMaxRetries(2)));
-    exec.inject(Functions.promiseOf(() -> null, exec), true);
+    exec.inject(Functions.getPromise(ctx -> null, exec), true);
 
     // When / Then
     resetMocks();
@@ -128,13 +128,14 @@ public class AsyncExecutionTest {
     assertNull(exec.getLastResult());
     assertNull(exec.getLastFailure());
     verifyScheduler(1);
-    verify(future).complete(null, null);
+    verify(future).completeResult(ExecutionResult.NONE);
   }
 
   public void testRetryForResultAndThrowable() {
     // Given rpRetry for null
-    exec = new AsyncExecution(scheduler, future, executorFor(new RetryPolicy<>().withMaxAttempts(10).handleResult(null)));
-    exec.inject(Functions.promiseOf(() -> null, exec), true);
+    exec = new AsyncExecution(scheduler, future,
+      executorFor(new RetryPolicy<>().withMaxAttempts(10).handleResult(null)));
+    exec.inject(Functions.getPromise(ctx -> null, exec), true);
 
     // When / Then
     assertFalse(exec.complete(null));
@@ -151,11 +152,11 @@ public class AsyncExecutionTest {
     assertEquals(exec.getLastResult(), Integer.valueOf(1));
     assertNull(exec.getLastFailure());
     verifyScheduler(2);
-    verify(future).complete(1, null);
+    verify(future).completeResult(ExecutionResult.success(1));
 
     // Given 2 max retries
     exec = new AsyncExecution(scheduler, future, executorFor(new RetryPolicy<>().handleResult(null).withMaxRetries(2)));
-    exec.inject(Functions.promiseOf(() -> null, exec), true);
+    exec.inject(Functions.getPromise(ctx -> null, exec), true);
 
     // When / Then
     resetMocks();
@@ -171,14 +172,14 @@ public class AsyncExecutionTest {
     assertNull(exec.getLastResult());
     assertEquals(exec.getLastFailure(), e);
     verifyScheduler(1);
-    verify(future).complete(null, e);
+    verify(future).completeResult(ExecutionResult.failure(e));
   }
 
   public void testRetryOn() {
     // Given rpRetry on IllegalArgumentException
     exec = new AsyncExecution(scheduler, future,
-        executorFor(new RetryPolicy<>().handle(IllegalArgumentException.class)));
-    exec.inject(Functions.promiseOf(() -> null, exec), true);
+      executorFor(new RetryPolicy<>().handle(IllegalArgumentException.class)));
+    exec.inject(Functions.getPromise(ctx-> null, exec), true);
 
     // When / Then
     assertTrue(exec.retryOn(new IllegalArgumentException()));
@@ -191,11 +192,11 @@ public class AsyncExecutionTest {
     assertNull(exec.getLastResult());
     assertEquals(exec.getLastFailure(), e);
     verifyScheduler(1);
-    verify(future).complete(null, e);
+    verify(future).completeResult(ExecutionResult.failure(e));
 
     // Given 2 max retries
     exec = new AsyncExecution(scheduler, future, executorFor(new RetryPolicy<>().withMaxRetries(1)));
-    exec.inject(Functions.promiseOf(() -> null, exec), true);
+    exec.inject(Functions.getPromise(ctx -> null, exec), true);
 
     // When / Then
     resetMocks();
@@ -209,7 +210,7 @@ public class AsyncExecutionTest {
     assertNull(exec.getLastResult());
     assertEquals(exec.getLastFailure(), e);
     verifyScheduler(1);
-    verify(future).complete(null, e);
+    verify(future).completeResult(ExecutionResult.failure(e));
   }
 
   @Test(expectedExceptions = IllegalStateException.class)
@@ -223,7 +224,7 @@ public class AsyncExecutionTest {
   public void testCompleteOrRetry() {
     // Given rpRetry on IllegalArgumentException
     exec = new AsyncExecution(scheduler, future, executorFor(new RetryPolicy<>()));
-    exec.inject(Functions.promiseOf(() -> null, exec), true);
+    exec.inject(Functions.getPromise(ctx -> null, exec), true);
 
     // When / Then
     exec.completeOrHandle(null, e);
@@ -237,7 +238,7 @@ public class AsyncExecutionTest {
     assertNull(exec.getLastResult());
     assertNull(exec.getLastFailure());
     verifyScheduler(1);
-    verify(future).complete(null, null);
+    verify(future).completeResult(ExecutionResult.NONE);
   }
 
   @SuppressWarnings("unchecked")

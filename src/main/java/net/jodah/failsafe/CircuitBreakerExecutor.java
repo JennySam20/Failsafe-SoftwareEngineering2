@@ -13,19 +13,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License
  */
-package net.jodah.failsafe.internal.executor;
-
-import net.jodah.failsafe.*;
-
-import java.time.Duration;
+package net.jodah.failsafe;
 
 /**
  * A PolicyExecutor that handles failures according to a {@link CircuitBreaker}.
  *
  * @author Jonathan Halterman
  */
-public class CircuitBreakerExecutor extends PolicyExecutor<CircuitBreaker> {
-  public CircuitBreakerExecutor(CircuitBreaker circuitBreaker, AbstractExecution execution) {
+class CircuitBreakerExecutor extends PolicyExecutor<CircuitBreaker> {
+  CircuitBreakerExecutor(CircuitBreaker circuitBreaker, AbstractExecution execution) {
     super(circuitBreaker, execution);
   }
 
@@ -35,15 +31,7 @@ public class CircuitBreakerExecutor extends PolicyExecutor<CircuitBreaker> {
       policy.preExecute();
       return null;
     }
-    return ExecutionResult.failure(new CircuitBreakerOpenException());
-  }
-
-  @Override
-  protected boolean isFailure(ExecutionResult result) {
-    long elapsedNanos = execution.getElapsedTime().toNanos();
-    Duration timeout = policy.getTimeout();
-    boolean timeoutExceeded = timeout != null && elapsedNanos >= timeout.toNanos();
-    return timeoutExceeded || super.isFailure(result);
+    return ExecutionResult.failure(new CircuitBreakerOpenException(policy));
   }
 
   @Override
@@ -53,7 +41,7 @@ public class CircuitBreakerExecutor extends PolicyExecutor<CircuitBreaker> {
 
   @Override
   protected ExecutionResult onFailure(ExecutionResult result) {
-    policy.recordFailure();
-    return result.withComplete();
+    policy.recordExecutionFailure(execution);
+    return result;
   }
 }

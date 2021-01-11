@@ -25,13 +25,10 @@ import java.util.function.BiPredicate;
 import java.util.function.Predicate;
 
 /**
- * A Policy that captures conditions to determine whether an execution is a failure. If no failure conditions are
- * configured:
- * <ul>
- * <li>If no other policies are configured, the execution is considered a failure if an Exception was thrown.</li>
- * <li>If other policies were configured, the execution is considered a failure if the previous configured Policy's
- * handling of the execution failed.</li>
- * </ul>
+ * A Policy that captures conditions to determine whether an execution is a failure.
+ * <p>
+ * If no handlers are configured, the execution is considered a failure if an Exception was thrown.
+ * </p>
  *
  * @param <S> self type
  * @param <R> result type
@@ -63,7 +60,8 @@ public abstract class FailurePolicy<S, R> extends PolicyListeners<S, R> implemen
    * @throws NullPointerException if {@code failures} is null
    * @throws IllegalArgumentException if failures is empty
    */
-  public S handle(Class<? extends Throwable>... failures) {
+  @SafeVarargs
+  public final S handle(Class<? extends Throwable>... failures) {
     Assert.notNull(failures, "failures");
     Assert.isTrue(failures.length > 0, "Failures cannot be empty");
     return handle(Arrays.asList(failures));
@@ -139,8 +137,8 @@ public abstract class FailurePolicy<S, R> extends PolicyListeners<S, R> implemen
    */
   boolean isFailure(ExecutionResult result) {
     return failureConditions.isEmpty() ?
-        result.getFailure() != null :
-        isFailure((R) result.getResult(), result.getFailure());
+      result.getFailure() != null :
+      isFailure((R) result.getResult(), result.getFailure());
   }
 
   /**
@@ -172,7 +170,7 @@ public abstract class FailurePolicy<S, R> extends PolicyListeners<S, R> implemen
    * Returns a predicate that evaluates whether the {@code result} equals an execution result.
    */
   static <R> BiPredicate<R, Throwable> resultPredicateFor(R result) {
-    return (t, u) -> Objects.equals(result, t);
+    return (t, u) -> result == null ? t == null && u == null : Objects.equals(result, t);
   }
 
   /**

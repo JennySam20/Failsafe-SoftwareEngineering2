@@ -20,10 +20,11 @@ import net.jodah.failsafe.internal.util.Assert;
 import net.jodah.failsafe.util.concurrent.Scheduler;
 
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 
 /**
- * Utilities for creating functions.
+ * Utilities for creating and applying functions.
  *
  * @author Jonathan Halterman
  */
@@ -34,8 +35,184 @@ final class Functions {
     void set(T value);
   }
 
-  /** Returns a SettableSupplier that supplies the set value once then uses the {@code supplier} for subsequent calls. */
-  static <T> SettableSupplier<CompletableFuture<T>> settableSupplierOf(Supplier<CompletableFuture<T>> supplier) {
+  /**
+   * Returns a Supplier that pre-executes the {@code execution}, applies the {@code supplier}, records the result and
+   * returns the result. This implementation also handles Thread interrupts.
+   */
+  static <T> Supplier<ExecutionResult> get(CheckedSupplier<T> supplier, AbstractExecution execution) {
+    return () -> {
+      ExecutionResult result;
+      Throwable throwable = null;
+      try {
+        execution.preExecute();
+        result = ExecutionResult.success(supplier.get());
+      } catch (Throwable t) {
+        throwable = t;
+        result = ExecutionResult.failure(t);
+      } finally {
+        // Guard against race with Timeout interruption
+        synchronized (execution) {
+          execution.canInterrupt = false;
+          if (execution.interrupted)
+            // Clear interrupt flag if interruption was intended
+            Thread.interrupted();
+          else if (throwable instanceof InterruptedException)
+            // Set interrupt flag if interrupt occurred but was not intentional
+            Thread.currentThread().interrupt();
+        }
+      }
+
+      execution.record(result);
+      return result;
+    };
+  }
+
+  /**
+   * Returns a Supplier that pre-executes the {@code execution}, applies the {@code supplier}, records the result and
+   * returns a promise containing the result.
+   */
+  static <T> Supplier<CompletableFuture<ExecutionResult>> getPromise(ContextualSupplier<T> supplier,
+    AbstractExecution execution) {
+    Assert.notNull(supplier, "supplier");
+    return () -> {
+      ExecutionResult result;
+      try {
+        execution.preExecute();
+        result = ExecutionResult.success(supplier.get(execution));
+      } catch (Throwable t) {
+        result = ExecutionResult.failure(t);
+      }
+      execution.record(result);
+      return CompletableFuture.completedFuture(result);
+    };
+  }
+
+  /**
+   * Returns a Supplier that asynchronously applies the {@code supplier} on the first call, synchronously on subsequent
+   * calls, and returns a promise containing the result.
+   */
+  @SuppressWarnings("unchecked")
+  static Supplier<CompletableFuture<ExecutionResult>> getPromiseAsync(
+    Supplier<CompletableFuture<ExecutionResult>> supplier, Scheduler scheduler, FailsafeFuture<Object> future) {
+    AtomicBoolean scheduled = new AtomicBoolean();
+    return () -> {
+      if (scheduled.get()) {
+        return supplier.get();
+      } else {
+        CompletableFuture<ExecutionResult> promise = new CompletableFuture<>();
+        Callable<Object> callable = () -> supplier.get().whenComplete((result, error) -> {
+          if (error != null)
+            promise.completeExceptionally(error);
+          else
+            promise.complete(result);
+        });
+
+        try {
+          scheduled.set(true);
+          future.inject((Future) scheduler.schedule(callable, 0, TimeUnit.NANOSECONDS));
+        } catch (Throwable t) {
+          promise.completeExceptionally(t);
+        }
+        return promise;
+      }
+    };
+  }
+
+  /**
+   * Returns a Supplier that pre-executes the {@code execution}, applies the {@code supplier}, attempts to complete the
+   * {@code execution} if a failure occurs, and returns a promise containing the result. Locks to ensure the resulting
+   * supplier cannot be applied multiple times concurrently.
+   */
+  static <T> Supplier<CompletableFuture<ExecutionResult>> getPromiseExecution(AsyncSupplier<T> supplier,
+    AsyncExecution execution) {
+    Assert.notNull(supplier, "supplier");
+    return new Supplier<CompletableFuture<ExecutionResult>>() {
+      @Override
+      public synchronized CompletableFuture<ExecutionResult> get() {
+        try {
+          execution.preExecute();
+          supplier.get(execution);
+        } catch (Throwable e) {
+          execution.completeOrHandle(null, e);
+        }
+        return NULL_FUTURE;
+      }
+    };
+  }
+
+  /**
+   * Returns a Supplier that pre-executes the {@code execution}, applies the {@code supplier}, records the result and
+   * returns a promise containing the result.
+   */
+  static <T> Supplier<CompletableFuture<ExecutionResult>> getPromiseOfStage(
+    ContextualSupplier<? extends CompletionStage<? extends T>> supplier, AbstractExecution execution) {
+    Assert.notNull(supplier, "supplier");
+    return () -> {
+      CompletableFuture<ExecutionResult> promise = new CompletableFuture<>();
+      try {
+        execution.preExecute();
+        supplier.get(execution).whenComplete((result, failure) -> {
+          if (failure instanceof CompletionException)
+            failure = failure.getCause();
+          ExecutionResult r = failure == null ? ExecutionResult.success(result) : ExecutionResult.failure(failure);
+          execution.record(r);
+          promise.complete(r);
+        });
+      } catch (Throwable t) {
+        ExecutionResult result = ExecutionResult.failure(t);
+        execution.record(result);
+        promise.complete(result);
+      }
+      return promise;
+    };
+  }
+
+  /**
+   * Returns a Supplier that pre-executes the {@code execution}, applies the {@code supplier}, attempts to complete the
+   * {@code execution} if a failure occurs, and returns a promise containing the result. Locks to ensure the resulting
+   * supplier cannot be applied multiple times concurrently.
+   */
+  static <T> Supplier<CompletableFuture<ExecutionResult>> getPromiseOfStageExecution(
+    AsyncSupplier<? extends CompletionStage<? extends T>> supplier, AsyncExecution execution) {
+    Assert.notNull(supplier, "supplier");
+    Semaphore asyncFutureLock = new Semaphore(1);
+    return () -> {
+      try {
+        execution.preExecute();
+        asyncFutureLock.acquire();
+        supplier.get(execution).whenComplete((innerResult, failure) -> {
+          try {
+            if (failure != null)
+              execution.completeOrHandle(innerResult,
+                failure instanceof CompletionException ? failure.getCause() : failure);
+          } finally {
+            asyncFutureLock.release();
+          }
+        });
+      } catch (Throwable e) {
+        try {
+          execution.completeOrHandle(null, e);
+        } finally {
+          asyncFutureLock.release();
+        }
+      }
+
+      return NULL_FUTURE;
+    };
+  }
+
+  static <T> AsyncSupplier<T> toAsyncSupplier(AsyncRunnable runnable) {
+    Assert.notNull(runnable, "runnable");
+    return execution -> {
+      runnable.run(execution);
+      return null;
+    };
+  }
+
+  /**
+   * Returns a SettableSupplier that supplies the set value once then uses the {@code supplier} for subsequent calls.
+   */
+  static <T> SettableSupplier<CompletableFuture<T>> toSettableSupplier(Supplier<CompletableFuture<T>> supplier) {
     return new SettableSupplier<CompletableFuture<T>>() {
       volatile boolean called;
       volatile CompletableFuture<T> value;
@@ -57,240 +234,7 @@ final class Functions {
     };
   }
 
-  /**
-   * Returns a Supplier that supplies a promise that is completed with the result of calling the {@code supplier} on the
-   * {@code scheduler}.
-   */
-  @SuppressWarnings("unchecked")
-  static Supplier<CompletableFuture<ExecutionResult>> makeAsync(Supplier<CompletableFuture<ExecutionResult>> supplier,
-      Scheduler scheduler, FailsafeFuture<Object> future) {
-    return () -> {
-      CompletableFuture<ExecutionResult> promise = new CompletableFuture<>();
-      Callable<Object> callable = () -> supplier.get().handle((result, error) -> {
-        // Propagate result
-        if (result != null)
-          promise.complete(result);
-        else
-          promise.completeExceptionally(error);
-        return result;
-      });
-
-      try {
-        future.inject((Future) scheduler.schedule(callable, 0, TimeUnit.NANOSECONDS));
-      } catch (Exception e) {
-        promise.completeExceptionally(e);
-      }
-      return promise;
-    };
-  }
-
-  static <T> Supplier<CompletableFuture<ExecutionResult>> promiseOf(CheckedSupplier<T> supplier,
-      AbstractExecution execution) {
-    Assert.notNull(supplier, "supplier");
-    return () -> {
-      ExecutionResult result;
-      try {
-        execution.preExecute();
-        result = ExecutionResult.success(supplier.get());
-      } catch (Throwable e) {
-        result = ExecutionResult.failure(e);
-      }
-      execution.record(result);
-      return CompletableFuture.completedFuture(result);
-    };
-  }
-
-  static Supplier<CompletableFuture<ExecutionResult>> promiseOf(CheckedRunnable runnable, AbstractExecution execution) {
-    Assert.notNull(runnable, "runnable");
-    return () -> {
-      ExecutionResult result;
-      try {
-        execution.preExecute();
-        runnable.run();
-        result = ExecutionResult.NONE;
-      } catch (Throwable e) {
-        result = ExecutionResult.failure(e);
-      }
-      execution.record(result);
-      return CompletableFuture.completedFuture(result);
-    };
-  }
-
-  static <T> Supplier<CompletableFuture<ExecutionResult>> promiseOf(ContextualSupplier<T> supplier,
-      AbstractExecution execution) {
-    Assert.notNull(supplier, "supplier");
-    return () -> {
-      ExecutionResult result;
-      try {
-        execution.preExecute();
-        result = ExecutionResult.success(supplier.get(execution));
-      } catch (Throwable e) {
-        result = ExecutionResult.failure(e);
-      }
-      execution.record(result);
-      return CompletableFuture.completedFuture(result);
-    };
-  }
-
-  static Supplier<CompletableFuture<ExecutionResult>> promiseOf(ContextualRunnable runnable,
-      AbstractExecution execution) {
-    Assert.notNull(runnable, "runnable");
-    return () -> {
-      ExecutionResult result;
-      try {
-        execution.preExecute();
-        runnable.run(execution);
-        result = ExecutionResult.NONE;
-      } catch (Throwable e) {
-        result = ExecutionResult.failure(e);
-      }
-      execution.record(result);
-      return CompletableFuture.completedFuture(result);
-    };
-  }
-
-  static <T> Supplier<CompletableFuture<ExecutionResult>> asyncOfExecution(AsyncSupplier<T> supplier,
-      AsyncExecution execution) {
-    Assert.notNull(supplier, "supplier");
-    return new Supplier<CompletableFuture<ExecutionResult>>() {
-      @Override
-      public synchronized CompletableFuture<ExecutionResult> get() {
-        try {
-          execution.preExecute();
-          supplier.get(execution);
-        } catch (Throwable e) {
-          execution.completeOrHandle(null, e);
-        }
-        return NULL_FUTURE;
-      }
-    };
-  }
-
-  static Supplier<CompletableFuture<ExecutionResult>> asyncOfExecution(AsyncRunnable runnable,
-      AsyncExecution execution) {
-    Assert.notNull(runnable, "runnable");
-    return new Supplier<CompletableFuture<ExecutionResult>>() {
-      @Override
-      public synchronized CompletableFuture<ExecutionResult> get() {
-        try {
-          execution.preExecute();
-          runnable.run(execution);
-        } catch (Throwable e) {
-          execution.completeOrHandle(null, e);
-        }
-        return NULL_FUTURE;
-      }
-    };
-  }
-
-  static <T> Supplier<CompletableFuture<ExecutionResult>> promiseOfStage(
-      CheckedSupplier<? extends CompletionStage<? extends T>> supplier, AbstractExecution execution) {
-    Assert.notNull(supplier, "supplier");
-    return () -> {
-      CompletableFuture<ExecutionResult> promise = new CompletableFuture<>();
-      try {
-        execution.preExecute();
-        supplier.get().whenComplete((innerResult, failure) -> {
-          // Unwrap CompletionException cause
-          ExecutionResult result;
-          if ( failure != null ) {
-            if ( failure instanceof CompletionException) {
-              failure = failure.getCause();
-            }
-            result = ExecutionResult.failure(failure);
-          } else {
-            result = ExecutionResult.success(innerResult);
-          }
-          execution.record(result);
-          promise.complete(result);
-        });
-      } catch (Throwable e) {
-        ExecutionResult result = ExecutionResult.failure(e);
-        execution.record(result);
-        promise.complete(result);
-      }
-      return promise;
-    };
-  }
-
-  static <T> Supplier<CompletableFuture<ExecutionResult>> promiseOfStage(
-      ContextualSupplier<? extends CompletionStage<? extends T>> supplier, AbstractExecution execution) {
-    Assert.notNull(supplier, "supplier");
-    return () -> {
-      CompletableFuture<ExecutionResult> promise = new CompletableFuture<>();
-      try {
-        execution.preExecute();
-        supplier.get(execution).whenComplete((innerResult, failure) -> {
-          // Unwrap CompletionException cause
-          ExecutionResult result;
-          if ( failure != null ) {
-            if ( failure instanceof CompletionException) {
-              failure = failure.getCause();
-            }
-            result = ExecutionResult.failure(failure);
-          } else {
-            result = ExecutionResult.success(innerResult);
-          }
-          execution.record(result);
-          promise.complete(result);
-        });
-      } catch (Throwable e) {
-        ExecutionResult result = ExecutionResult.failure(e);
-        execution.record(result);
-        promise.complete(result);
-      }
-      return promise;
-    };
-  }
-
-  static <T> Supplier<CompletableFuture<ExecutionResult>> asyncOfFutureExecution(
-      AsyncSupplier<? extends CompletionStage<? extends T>> supplier, AsyncExecution execution) {
-    Assert.notNull(supplier, "supplier");
-    return new Supplier<CompletableFuture<ExecutionResult>>() {
-      Semaphore asyncFutureLock = new Semaphore(1);
-
-      @Override
-      public CompletableFuture<ExecutionResult> get() {
-        try {
-          execution.preExecute();
-          asyncFutureLock.acquire();
-          supplier.get(execution).whenComplete((innerResult, failure) -> {
-            try {
-              if (failure != null)
-                execution.completeOrHandle(innerResult,
-                    failure instanceof CompletionException ? failure.getCause() : failure);
-            } finally {
-              asyncFutureLock.release();
-            }
-          });
-        } catch (Throwable e) {
-          try {
-            execution.completeOrHandle(null, e);
-          } finally {
-            asyncFutureLock.release();
-          }
-        }
-
-        return NULL_FUTURE;
-      }
-    };
-  }
-
-  static <T> Supplier<ExecutionResult> resultSupplierOf(CheckedSupplier<T> supplier, AbstractExecution execution) {
-    return () -> {
-      ExecutionResult result = null;
-      try {
-        result = ExecutionResult.success(supplier.get());
-      } catch (Throwable t) {
-        result = ExecutionResult.failure(t);
-      } finally {
-        execution.record(result);
-      }
-      return result;
-    };
-  }
-
-  static <T> CheckedSupplier<T> supplierOf(CheckedRunnable runnable) {
+  static <T> CheckedSupplier<T> toSupplier(CheckedRunnable runnable) {
     Assert.notNull(runnable, "runnable");
     return () -> {
       runnable.run();
@@ -298,12 +242,7 @@ final class Functions {
     };
   }
 
-  static <T> CheckedSupplier<T> supplierOf(ContextualSupplier<T> supplier, ExecutionContext context) {
-    Assert.notNull(supplier, "supplier");
-    return () -> supplier.get(context);
-  }
-
-  static <T> CheckedSupplier<T> supplierOf(ContextualRunnable runnable, ExecutionContext context) {
+  static <T> CheckedSupplier<T> toSupplier(ContextualRunnable runnable, ExecutionContext context) {
     Assert.notNull(runnable, "runnable");
     return () -> {
       runnable.run(context);
@@ -311,25 +250,51 @@ final class Functions {
     };
   }
 
-  static <T, R> CheckedFunction<T, R> fnOf(CheckedSupplier<R> supplier) {
-    return t -> supplier.get();
+  static <T> CheckedSupplier<T> toSupplier(ContextualSupplier<T> supplier, ExecutionContext context) {
+    Assert.notNull(supplier, "supplier");
+    return () -> supplier.get(context);
   }
 
-  static <T, R> CheckedFunction<T, R> fnOf(CheckedConsumer<T> consumer) {
+  static <T> ContextualSupplier<T> toCtxSupplier(CheckedRunnable runnable) {
+    Assert.notNull(runnable, "runnable");
+    return ctx -> {
+      runnable.run();
+      return null;
+    };
+  }
+
+  static <T> ContextualSupplier<T> toCtxSupplier(ContextualRunnable runnable) {
+    Assert.notNull(runnable, "runnable");
+    return ctx -> {
+      runnable.run(ctx);
+      return null;
+    };
+  }
+
+  static <T> ContextualSupplier<T> toCtxSupplier(CheckedSupplier<T> supplier) {
+    Assert.notNull(supplier, "supplier");
+    return ctx -> supplier.get();
+  }
+
+  static <T, R> CheckedFunction<T, R> toFn(CheckedConsumer<T> consumer) {
     return t -> {
       consumer.accept(t);
       return null;
     };
   }
 
-  static <T, R> CheckedFunction<T, R> fnOf(CheckedRunnable runnable) {
+  static <T, R> CheckedFunction<T, R> toFn(CheckedRunnable runnable) {
     return t -> {
       runnable.run();
       return null;
     };
   }
 
-  static <T, R> CheckedFunction<T, R> fnOf(R result) {
+  static <T, R> CheckedFunction<T, R> toFn(CheckedSupplier<R> supplier) {
+    return t -> supplier.get();
+  }
+
+  static <T, R> CheckedFunction<T, R> toFn(R result) {
     return t -> result;
   }
 }

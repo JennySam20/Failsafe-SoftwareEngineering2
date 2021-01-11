@@ -15,25 +15,47 @@
  */
 package net.jodah.failsafe;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Future;
 
 /**
- * A CompletableFuture implementation that propogates cancellations.
+ * A CompletableFuture implementation that propogates cancellations and calls completion handlers.
+ * <p>
+ * Part of the Failsafe SPI.
  *
  * @param <T> result type
  * @author Jonathan Halterman
  */
 public class FailsafeFuture<T> extends CompletableFuture<T> {
   private final FailsafeExecutor<T> executor;
-  private ExecutionContext execution;
+  private AbstractExecution execution;
 
-  // Mutable state
+  // Mutable state, guarded by "this"
   private Future<T> delegate;
+  private List<Future<T>> timeoutDelegates;
 
   FailsafeFuture(FailsafeExecutor<T> executor) {
     this.executor = executor;
+  }
+
+  /**
+   * If not already completed, completes  the future with the {@code value}, calling the complete and success handlers.
+   */
+  @Override
+  public synchronized boolean complete(T value) {
+    return completeResult(ExecutionResult.success(value));
+  }
+
+  /**
+   * If not already completed, completes the future with the {@code failure}, calling the complete and failure
+   * handlers.
+   */
+  @Override
+  public synchronized boolean completeExceptionally(Throwable failure) {
+    return completeResult(ExecutionResult.failure(failure));
   }
 
   /**
@@ -45,29 +67,72 @@ public class FailsafeFuture<T> extends CompletableFuture<T> {
       return false;
 
     boolean cancelResult = super.cancel(mayInterruptIfRunning);
-    if (delegate != null)
-      cancelResult = delegate.cancel(mayInterruptIfRunning);
-    Throwable failure = new CancellationException();
-    complete(null, failure);
-    executor.handleComplete(ExecutionResult.failure(failure), execution);
+    cancelResult = cancelDelegates(mayInterruptIfRunning, cancelResult);
+    ExecutionResult result = ExecutionResult.failure(new CancellationException());
+    super.completeExceptionally(result.getFailure());
+    executor.handleComplete(result, execution);
     return cancelResult;
   }
 
-  synchronized void complete(T result, Throwable failure) {
+  /**
+   * Completes the execution with the {@code result} and calls completion listeners.
+   */
+  @SuppressWarnings("unchecked")
+  synchronized boolean completeResult(ExecutionResult result) {
     if (isDone())
-      return;
+      return false;
 
-    if (failure != null)
-      super.completeExceptionally(failure);
+    Throwable failure = result.getFailure();
+    boolean completed;
+    if (failure == null)
+      completed = super.complete((T) result.getResult());
     else
-      super.complete(result);
+      completed = super.completeExceptionally(failure);
+    if (completed)
+      executor.handleComplete(result, execution);
+    return completed;
   }
 
-  public synchronized void inject(Future<T> delegate) {
+  synchronized Future<T> getDelegate() {
+    return delegate;
+  }
+
+  /**
+   * Cancels the delegate passing in the {@code interruptDelegate} flag, cancels all timeout delegates, and marks the
+   * execution as cancelled.
+   */
+  synchronized boolean cancelDelegates(boolean interruptDelegate, boolean result) {
+    execution.cancelled = true;
+    execution.interrupted = interruptDelegate;
+    if (delegate != null)
+      result = delegate.cancel(interruptDelegate);
+    if (timeoutDelegates != null) {
+      for (Future<T> timeoutDelegate : timeoutDelegates)
+        timeoutDelegate.cancel(false);
+      timeoutDelegates.clear();
+    }
+    return result;
+  }
+
+  synchronized List<Future<T>> getTimeoutDelegates() {
+    return timeoutDelegates;
+  }
+
+  synchronized void inject(Future<T> delegate) {
     this.delegate = delegate;
+    if (timeoutDelegates != null) {
+      // Timeout delegates should already be cancelled
+      timeoutDelegates.clear();
+    }
   }
 
-  void inject(ExecutionContext execution) {
+  synchronized void injectTimeout(Future<T> timeoutDelegate) {
+    if (timeoutDelegates == null)
+      timeoutDelegates = new ArrayList<>(3);
+    timeoutDelegates.add(timeoutDelegate);
+  }
+
+  void inject(AbstractExecution execution) {
     this.execution = execution;
   }
 }

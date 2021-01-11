@@ -18,23 +18,32 @@ package net.jodah.failsafe.internal;
 import net.jodah.failsafe.CircuitBreaker;
 import net.jodah.failsafe.CircuitBreaker.State;
 
-public class OpenState extends CircuitState {
-  private final CircuitBreaker circuit;
-  private final long startTime = System.nanoTime();
+import java.time.Duration;
 
-  public OpenState(CircuitBreaker circuit, CircuitState previousState) {
-    this.circuit = circuit;
-    this.bitSet = previousState.bitSet;
+public class OpenState extends CircuitState {
+  private final long startTime = System.nanoTime();
+  private final long delayNanos;
+
+  public OpenState(CircuitBreaker breaker, CircuitState previousState, Duration delay) {
+    super(breaker, previousState.stats);
+    this.delayNanos = delay.toNanos();
   }
 
   @Override
-  public boolean allowsExecution(CircuitBreakerStats stats) {
-    if (System.nanoTime() - startTime >= circuit.getDelay().toNanos()) {
-      circuit.halfOpen();
+  public boolean allowsExecution() {
+    if (System.nanoTime() - startTime >= delayNanos) {
+      breaker.halfOpen();
       return true;
     }
 
     return false;
+  }
+
+  @Override
+  public Duration getRemainingDelay() {
+    long elapsedTime = System.nanoTime() - startTime;
+    long remainingDelay = delayNanos - elapsedTime;
+    return Duration.ofNanos(Math.max(remainingDelay, 0));
   }
 
   @Override

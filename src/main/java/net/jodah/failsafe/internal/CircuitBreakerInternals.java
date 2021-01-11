@@ -15,15 +15,23 @@
  */
 package net.jodah.failsafe.internal;
 
+import net.jodah.failsafe.ExecutionContext;
+
 /**
- * Private CircuitBreaker stats APIs.
- * 
+ * Internal CircuitBreaker APIs.
+ *
  * @author Jonathan Halterman
  */
-public interface CircuitBreakerStats {
+public interface CircuitBreakerInternals {
   /**
-   * Returns the current number of executions occurring on the circuit breaker. Executions are started when a
-   * {@code Failsafe} call begins and ended when a result is recorded.
+   * Returns the current number of executions occurring on the circuit breaker. Executions are started when a {@code
+   * Failsafe} call begins and ended when a result is recorded.
    */
   int getCurrentExecutions();
+
+  /**
+   * Opens the circuit breaker and considers the {@code context} when computing the delay before the
+   * circuit breaker will transition to half open.
+   */
+  void open(ExecutionContext context);
 }

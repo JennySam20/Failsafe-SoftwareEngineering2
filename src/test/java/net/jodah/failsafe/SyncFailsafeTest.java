@@ -40,10 +40,10 @@ import static org.testng.Assert.*;
 public class SyncFailsafeTest extends AbstractFailsafeTest {
   // Results from a synchronous Failsafe call
   private @SuppressWarnings("unchecked") Class<? extends Throwable>[] syncThrowables = new Class[] {
-      ConnectException.class };
+    ConnectException.class };
   // Results from a get against a future that wraps a synchronous Failsafe call
   private @SuppressWarnings("unchecked") Class<? extends Throwable>[] futureSyncThrowables = new Class[] {
-      ExecutionException.class, ConnectException.class };
+    ExecutionException.class, ConnectException.class };
 
   @BeforeMethod
   protected void beforeMethod() {
@@ -124,8 +124,8 @@ public class SyncFailsafeTest extends AbstractFailsafeTest {
 
     // When
     CompletableFuture.supplyAsync(() -> Failsafe.with(retryPolicy).get(() -> service.connect()))
-        .thenRun(() -> Failsafe.with(retryPolicy).get(() -> service.disconnect()))
-        .get();
+      .thenRun(() -> Failsafe.with(retryPolicy).get(() -> service.disconnect()))
+      .get();
 
     // Then
     verify(service, times(4)).connect();
@@ -137,8 +137,8 @@ public class SyncFailsafeTest extends AbstractFailsafeTest {
 
     // When / Then
     assertThrows(
-        () -> CompletableFuture.supplyAsync(() -> Failsafe.with(retryTwice).get(() -> service.connect())).get(),
-        futureSyncThrowables);
+      () -> CompletableFuture.supplyAsync(() -> Failsafe.with(retryTwice).get(() -> service.connect())).get(),
+      futureSyncThrowables);
     verify(service, times(3)).connect();
   }
 
@@ -156,22 +156,84 @@ public class SyncFailsafeTest extends AbstractFailsafeTest {
     verify(service, times(3)).connect();
   }
 
+  /**
+   * Tests a scenario where three timeouts should cause all delegates to be cancelled with interrupts.
+   */
+  public void shouldCancelNestedTimeoutsWithInterrupt() throws Throwable {
+    // Given
+    RetryPolicy<Boolean> rp = new RetryPolicy<Boolean>().withMaxRetries(2);
+    Timeout<Boolean> timeout1 = Timeout.of(Duration.ofMillis(1000));
+    Timeout<Boolean> timeout2 = Timeout.<Boolean>of(Duration.ofMillis(200)).withCancel(true);
+
+    // When / Then
+    assertThrows(() -> Failsafe.with(rp, timeout2, timeout1).onComplete(e -> {
+      assertNull(e.getResult());
+      assertTrue(e.getFailure() instanceof TimeoutExceededException);
+    }).get(ctx -> {
+      assertTrue(ctx.getLastFailure() == null || ctx.getLastFailure() instanceof TimeoutExceededException);
+
+      try {
+        assertFalse(ctx.isCancelled());
+        Thread.sleep(1000);
+      } catch (InterruptedException e) {
+        assertTrue(ctx.isCancelled());
+        throw e;
+      }
+      fail("Expected interruption");
+      return false;
+    }), TimeoutExceededException.class);
+  }
+
   public void shouldOpenCircuitWhenTimeoutExceeded() {
     // Given
-    CircuitBreaker<Object> breaker = new CircuitBreaker<>().withTimeout(Duration.ofMillis(10));
+    Timeout<Object> timeout = Timeout.of(Duration.ofMillis(1));
+    CircuitBreaker<Object> breaker = new CircuitBreaker<>();
     assertTrue(breaker.isClosed());
 
     // When
-    Failsafe.with(breaker).run(() -> {
+    assertThrows(() -> Failsafe.with(breaker, timeout).run(() -> {
       Thread.sleep(20);
-    });
+    }), TimeoutExceededException.class);
 
     // Then
     assertTrue(breaker.isOpen());
   }
 
   /**
-   * Asserts that Failsafe throws when interrupting a waiting thread.
+   * Asserts that Failsafe throws when interrupting while blocked in an execution.
+   */
+  public void shouldThrowWhenInterruptedDuringSynchronousExecution() {
+    Thread mainThread = Thread.currentThread();
+    new Thread(() -> {
+      try {
+        Thread.sleep(100);
+        mainThread.interrupt();
+      } catch (Exception e) {
+      }
+    }).start();
+
+    try {
+      Failsafe.with(new RetryPolicy<>().withMaxRetries(0)).run(() -> {
+        try {
+          Thread.sleep(10000);
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+          throw e;
+        }
+        fail("Expected interruption");
+      });
+    } catch (Exception e) {
+      assertTrue(e instanceof FailsafeException);
+      assertTrue(e.getCause() instanceof InterruptedException);
+      // Clear interrupt flag
+      assertTrue(Thread.interrupted());
+      return;
+    }
+    fail("Exception expected");
+  }
+
+  /**
+   * Asserts that Failsafe throws when interrupting while blocked between executions.
    */
   public void shouldThrowWhenInterruptedDuringSynchronousDelay() {
     Thread mainThread = Thread.currentThread();
@@ -191,20 +253,22 @@ public class SyncFailsafeTest extends AbstractFailsafeTest {
       assertTrue(e instanceof FailsafeException);
       assertTrue(e.getCause() instanceof InterruptedException);
       // Clear interrupt flag
-      Thread.interrupted();
+      assertTrue(Thread.interrupted());
+      return;
     }
+    fail("Exception expected");
   }
 
   public void shouldRetryAndOpenCircuit() {
-    CircuitBreaker<Boolean> circuit = new CircuitBreaker<Boolean>().withFailureThreshold(3).withDelay(Duration.ofMinutes(10));
+    CircuitBreaker<Boolean> circuit = new CircuitBreaker<Boolean>().withFailureThreshold(3)
+      .withDelay(Duration.ofMinutes(10));
 
     // Given - Fail twice then succeed
     when(service.connect()).thenThrow(failures(20, new ConnectException())).thenReturn(true);
 
     // When
-    assertThrows(
-        () -> Failsafe.with(retryAlways.handle(ConnectException.class), circuit).run(() -> service.connect()),
-        CircuitBreakerOpenException.class);
+    assertThrows(() -> Failsafe.with(retryAlways.handle(ConnectException.class), circuit).run(() -> service.connect()),
+      CircuitBreakerOpenException.class);
 
     // Then
     verify(service, times(3)).connect();
@@ -300,6 +364,27 @@ public class SyncFailsafeTest extends AbstractFailsafeTest {
     assertThrows(() -> Failsafe.with(new RetryPolicy<>().withMaxRetries(1)).run(() -> {
       throw new TimeoutException();
     }), FailsafeException.class, TimeoutException.class);
+  }
+
+  public void shouldResetInterruptFlag() throws Throwable {
+    // Given
+    Thread t = Thread.currentThread();
+    new Thread(() -> {
+      try {
+        Thread.sleep(100);
+        t.interrupt();
+      } catch (InterruptedException e) {
+      }
+    }).start();
+
+    // Then
+    assertThrows(() -> Failsafe.with(retryNever).run(() -> {
+      Thread.sleep(1000);
+    }), FailsafeException.class, InterruptedException.class);
+    t.interrupt();
+
+    // Then
+    assertTrue(Thread.interrupted());
   }
 
   private void run(FailsafeExecutor<?> failsafe, Object runnable) {

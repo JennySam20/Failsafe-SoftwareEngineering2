@@ -15,9 +15,11 @@
  */
 package net.jodah.failsafe.internal;
 
+import net.jodah.failsafe.CircuitBreaker;
 import net.jodah.failsafe.CircuitBreaker.State;
-import net.jodah.failsafe.internal.util.CircularBitSet;
-import net.jodah.failsafe.util.Ratio;
+import net.jodah.failsafe.ExecutionContext;
+
+import java.time.Duration;
 
 /**
  * The state of a circuit.
@@ -25,39 +27,39 @@ import net.jodah.failsafe.util.Ratio;
  * @author Jonathan Halterman
  */
 public abstract class CircuitState {
-  static final Ratio ONE_OF_ONE = new Ratio(1, 1);
+  final CircuitBreaker breaker;
+  volatile CircuitStats stats;
 
-  protected CircularBitSet bitSet;
+  CircuitState(CircuitBreaker breaker, CircuitStats stats) {
+    this.breaker = breaker;
+    this.stats = stats;
+  }
 
-  public abstract boolean allowsExecution(CircuitBreakerStats stats);
+  public abstract boolean allowsExecution();
+
+  public Duration getRemainingDelay() {
+    return Duration.ZERO;
+  }
+
+  public CircuitStats getStats() {
+    return stats;
+  }
 
   public abstract State getState();
 
-  public int getFailureCount() {
-    return bitSet.negatives();
+  public synchronized void recordFailure(ExecutionContext context) {
+    stats.recordFailure();
+    checkThreshold(context);
   }
 
-  public Ratio getFailureRatio() {
-    return bitSet.negativeRatio();
+  public synchronized void recordSuccess() {
+    stats.recordSuccess();
+    checkThreshold(null);
   }
 
-  public int getSuccessCount() {
-    return bitSet.positives();
+  public void handleConfigChange() {
   }
 
-  public Ratio getSuccessRatio() {
-    return bitSet.positiveRatio();
-  }
-
-  public void recordFailure() {
-  }
-
-  public void recordSuccess() {
-  }
-
-  public void setFailureThreshold(Ratio threshold) {
-  }
-
-  public void setSuccessThreshold(Ratio threshold) {
+  void checkThreshold(ExecutionContext context) {
   }
 }

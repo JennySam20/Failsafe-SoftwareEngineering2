@@ -16,6 +16,7 @@
 package net.jodah.failsafe;
 
 import net.jodah.failsafe.internal.util.Assert;
+import net.jodah.failsafe.internal.util.DelegatingScheduler;
 
 import java.util.Arrays;
 import java.util.function.Supplier;
@@ -36,12 +37,14 @@ public class Execution extends AbstractExecution {
    */
   @SuppressWarnings("unchecked")
   public Execution(Policy... policies) {
-    super(new FailsafeExecutor<>(Arrays.asList(Assert.notNull(policies, "policies"))));
+    super(DelegatingScheduler.INSTANCE, new FailsafeExecutor<>(Arrays.asList(Assert.notNull(policies, "policies"))));
+    preExecute();
   }
 
   @SuppressWarnings("unchecked")
   Execution(FailsafeExecutor<?> executor) {
-    super((FailsafeExecutor<Object>) executor);
+    super(DelegatingScheduler.INSTANCE, (FailsafeExecutor<Object>) executor);
+    preExecute();
   }
 
   /**
@@ -51,7 +54,9 @@ public class Execution extends AbstractExecution {
    * @throws IllegalStateException if the execution is already complete
    */
   public boolean canRetryFor(Object result) {
-    return !postExecute(new ExecutionResult(result, null));
+    preExecute();
+    postExecute(new ExecutionResult(result, null));
+    return !completed;
   }
 
   /**
@@ -61,7 +66,9 @@ public class Execution extends AbstractExecution {
    * @throws IllegalStateException if the execution is already complete
    */
   public boolean canRetryFor(Object result, Throwable failure) {
-    return !postExecute(new ExecutionResult(result, failure));
+    preExecute();
+    postExecute(new ExecutionResult(result, failure));
+    return !completed;
   }
 
   /**
@@ -73,7 +80,9 @@ public class Execution extends AbstractExecution {
    */
   public boolean canRetryOn(Throwable failure) {
     Assert.notNull(failure, "failure");
-    return !postExecute(new ExecutionResult(null, failure));
+    preExecute();
+    postExecute(new ExecutionResult(null, failure));
+    return !completed;
   }
 
   /**
@@ -92,7 +101,9 @@ public class Execution extends AbstractExecution {
    * @throws IllegalStateException if the execution is already complete
    */
   public boolean complete(Object result) {
-    return postExecute(new ExecutionResult(result, null));
+    preExecute();
+    postExecute(new ExecutionResult(result, null));
+    return completed;
   }
 
   /**
@@ -113,7 +124,7 @@ public class Execution extends AbstractExecution {
    */
   ExecutionResult executeSync(Supplier<ExecutionResult> supplier) {
     for (PolicyExecutor<Policy<Object>> policyExecutor : policyExecutors)
-      supplier = policyExecutor.supply(supplier);
+      supplier = policyExecutor.supply(supplier, scheduler);
 
     ExecutionResult result = supplier.get();
     completed = result.isComplete();

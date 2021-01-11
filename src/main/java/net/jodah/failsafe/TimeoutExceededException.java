@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 the original author or authors.
+ * Copyright 2019 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,15 +13,24 @@
  * See the License for the specific language governing permissions and
  * limitations under the License
  */
-package net.jodah.failsafe.util;
+package net.jodah.failsafe;
 
-import org.testng.annotations.Test;
+/**
+ * Thrown when an execution exceeds a configured {@link Timeout}.
+ *
+ * @author Jonathan Halterman
+ */
+public class TimeoutExceededException extends FailsafeException {
+  private static final long serialVersionUID = 1L;
 
-import static org.testng.Assert.assertEquals;
+  private final Timeout timeout;
 
-@Test
-public class RatioTest {
-  public void shouldHandleZero() {
-    assertEquals(new Ratio(10, 0).getValue(), 0.0);
+  public TimeoutExceededException(Timeout timeout) {
+    this.timeout = timeout;
+  }
+
+  /** Retruns the {@link Timeout} that caused the exception. */
+  public Timeout getTimeout() {
+    return timeout;
   }
 }

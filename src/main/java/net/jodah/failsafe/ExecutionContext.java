@@ -24,17 +24,26 @@ import java.util.concurrent.atomic.AtomicInteger;
  * @author Jonathan Halterman
  */
 public class ExecutionContext {
-  private final Duration startTime;
+  volatile Duration startTime = Duration.ZERO;
+  volatile Duration attemptStartTime = Duration.ZERO;
   /** Number of execution attempts */
   AtomicInteger attempts = new AtomicInteger();
 
-  ExecutionContext(Duration startTime) {
-    this.startTime = startTime;
+  // Internally mutable state
+  volatile boolean cancelled;
+  volatile Object lastResult;
+  volatile Throwable lastFailure;
+
+  ExecutionContext() {
   }
 
   private ExecutionContext(ExecutionContext context) {
     this.startTime = context.startTime;
+    this.attemptStartTime = context.attemptStartTime;
     this.attempts = context.attempts;
+    this.cancelled = context.cancelled;
+    this.lastResult = context.lastResult;
+    this.lastFailure = context.lastFailure;
   }
 
   /**
@@ -45,10 +54,42 @@ public class ExecutionContext {
   }
 
   /**
-   * Gets the number of execution attempts so far.
+   * Returns the elapsed time since the last execution attempt began.
+   */
+  public Duration getElapsedAttemptTime() {
+    return Duration.ofNanos(System.nanoTime() - attemptStartTime.toNanos());
+  }
+
+  /**
+   * Gets the number of completed execution attempts so far. Will return {@code 0} when the first attempt is in
+   * progress.
    */
   public int getAttemptCount() {
     return attempts.get();
+  }
+
+  /**
+   * Returns the last failure that was recorded else {@code null}.
+   */
+  @SuppressWarnings("unchecked")
+  public <T extends Throwable> T getLastFailure() {
+    return (T) lastFailure;
+  }
+
+  /**
+   * Returns the last result that was recorded else {@code null}.
+   */
+  @SuppressWarnings("unchecked")
+  public <T> T getLastResult() {
+    return (T) lastResult;
+  }
+
+  /**
+   * Returns the last result that was recorded else the {@code defaultValue}.
+   */
+  @SuppressWarnings("unchecked")
+  public <T> T getLastResult(T defaultValue) {
+    return lastResult != null ? (T) lastResult : defaultValue;
   }
 
   /**
@@ -58,7 +99,46 @@ public class ExecutionContext {
     return startTime;
   }
 
+  /**
+   * Returns whether the execution has ben cancelled. In this case the implementor shuold attempt to stop execution.
+   */
+  public boolean isCancelled() {
+    return cancelled;
+  }
+
+  /**
+   * Returns {@code true} when {@link #getAttemptCount()} is {@code 0} meaning this is the first execution attempt.
+   */
+  public boolean isFirstAttempt() {
+    return attempts.get() == 0;
+  }
+
+  /**
+   * Returns {@code true} when {@link #getAttemptCount()} is {@code > 0} meaning the execution is being retried.
+   */
+  public boolean isRetry() {
+    return attempts.get() > 0;
+  }
+
   public ExecutionContext copy() {
     return new ExecutionContext(this);
+  }
+
+  static ExecutionContext ofResult(Object result) {
+    ExecutionContext context = new ExecutionContext();
+    context.lastResult = result;
+    return context;
+  }
+
+  static ExecutionContext ofFailure(Throwable failure) {
+    ExecutionContext context = new ExecutionContext();
+    context.lastFailure = failure;
+    return context;
+  }
+
+  @Override
+  public String toString() {
+    return "ExecutionContext[" + "attempts=" + attempts + ", lastResult=" + lastResult + ", lastFailure=" + lastFailure
+      + ']';
   }
 }

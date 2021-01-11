@@ -16,6 +16,7 @@
 package net.jodah.failsafe;
 
 import net.jodah.failsafe.internal.util.Assert;
+import net.jodah.failsafe.util.concurrent.Scheduler;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -29,23 +30,27 @@ import java.util.ListIterator;
  */
 @SuppressWarnings("WeakerAccess")
 public abstract class AbstractExecution extends ExecutionContext {
+  final Scheduler scheduler;
   final FailsafeExecutor<Object> executor;
   final List<PolicyExecutor<Policy<Object>>> policyExecutors;
 
   // Internally mutable state
-  volatile Object lastResult;
-  volatile Throwable lastFailure;
+  /* Whether a result has been post-executed */
   volatile boolean resultHandled;
-
-  /** The wait time in nanoseconds. */
-  private volatile long waitNanos;
+  /* Whether the execution can be interrupted */
+  volatile boolean canInterrupt;
+  /* Whether the execution has been interrupted */
+  volatile boolean interrupted;
+  /* The wait time in nanoseconds. */
+  volatile long waitNanos;
+  /* Whether the execution has been completed */
   volatile boolean completed;
 
   /**
    * Creates a new AbstractExecution for the {@code executor}.
    */
-  AbstractExecution(FailsafeExecutor<Object> executor) {
-    super(Duration.ofNanos(System.nanoTime()));
+  AbstractExecution(Scheduler scheduler, FailsafeExecutor<Object> executor) {
+    this.scheduler = scheduler;
     this.executor = executor;
     policyExecutors = new ArrayList<>(executor.policies.size());
     ListIterator<Policy<Object>> policyIterator = executor.policies.listIterator(executor.policies.size());
@@ -54,27 +59,41 @@ public abstract class AbstractExecution extends ExecutionContext {
   }
 
   /**
-   * Records an execution attempt.
+   * Records an execution attempt so long as the execution has not already been completed or interrupted. In the case of
+   * interruption, an execution will be recorded by the interrupting thread.
    *
    * @throws IllegalStateException if the execution is already complete
    */
   void record(ExecutionResult result) {
     Assert.state(!completed, "Execution has already been completed");
-    attempts.incrementAndGet();
-    lastResult = result.getResult();
-    lastFailure = result.getFailure();
+    if (!interrupted) {
+      attempts.incrementAndGet();
+      lastResult = result.getResult();
+      lastFailure = result.getFailure();
+    }
   }
 
   void preExecute() {
+    attemptStartTime = Duration.ofNanos(System.nanoTime());
+    if (startTime == Duration.ZERO)
+      startTime = attemptStartTime;
     resultHandled = false;
+    cancelled = false;
+    canInterrupt = true;
+    interrupted = false;
+  }
+
+  boolean isAsyncExecution() {
+    return false;
   }
 
   /**
-   * Performs post-execution handling of the {@code result}, returning true if complete else false.
+   * Performs post-execution handling of the {@code result}, completes the execution if all policies are complete for
+   * the {@code result}, and returns the result from the policies.
    *
    * @throws IllegalStateException if the execution is already complete
    */
-  synchronized boolean postExecute(ExecutionResult result) {
+  synchronized ExecutionResult postExecute(ExecutionResult result) {
     record(result);
     boolean allComplete = true;
     for (PolicyExecutor<Policy<Object>> policyExecutor : policyExecutors) {
@@ -84,23 +103,7 @@ public abstract class AbstractExecution extends ExecutionContext {
 
     waitNanos = result.getWaitNanos();
     completed = allComplete;
-    return completed;
-  }
-
-  /**
-   * Returns the last failure that was recorded.
-   */
-  @SuppressWarnings("unchecked")
-  public <T extends Throwable> T getLastFailure() {
-    return (T) lastFailure;
-  }
-
-  /**
-   * Returns the last result that was recorded.
-   */
-  @SuppressWarnings("unchecked")
-  public <T> T getLastResult() {
-    return (T) lastResult;
+    return result;
   }
 
   /**
