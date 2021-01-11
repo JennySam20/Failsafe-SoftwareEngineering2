@@ -1,14 +1,13 @@
 sudo: false
 language: java
+dist: trusty
 
 jdk:
   - oraclejdk8
-
-addons:
-  apt:
-    packages:
-      - oracle-java8-installer
-
+cache:
+  directories:
+    - .autoconf
+    - "$HOME/.m2"
 install: 
   - mvn install -DskipTests=true -Dgpg.skip=true -Dmaven.javadoc.skip=true -B -V
 script:

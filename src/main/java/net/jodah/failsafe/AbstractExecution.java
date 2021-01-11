@@ -15,37 +15,76 @@
  */
 package net.jodah.failsafe;
 
-import java.util.concurrent.TimeUnit;
-
 import net.jodah.failsafe.internal.util.Assert;
-import net.jodah.failsafe.util.Duration;
 
-abstract class AbstractExecution extends ExecutionContext {
-  final FailsafeConfig<Object, ?> config;
-  final RetryPolicy retryPolicy;
-  final CircuitBreaker circuitBreaker;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.ListIterator;
 
-  // Mutable state
-  long attemptStartTime;
+/**
+ * Common execution information.
+ *
+ * @author Jonathan Halterman
+ */
+@SuppressWarnings("WeakerAccess")
+public abstract class AbstractExecution extends ExecutionContext {
+  final FailsafeExecutor<Object> executor;
+  final List<PolicyExecutor<Policy<Object>>> policyExecutors;
+
+  // Internally mutable state
   volatile Object lastResult;
   volatile Throwable lastFailure;
+  volatile boolean resultHandled;
+
+  /** The wait time in nanoseconds. */
+  private volatile long waitNanos;
   volatile boolean completed;
-  volatile boolean retriesExceeded;
-  volatile boolean success;
-  volatile long delayNanos = -1;
-  volatile long waitNanos;
 
   /**
-   * Creates a new Execution for the {@code retryPolicy} and {@code circuitBreaker}.
-   * 
-   * @throws NullPointerException if {@code retryPolicy} is null
+   * Creates a new AbstractExecution for the {@code executor}.
    */
-  AbstractExecution(FailsafeConfig<Object, ?> config) {
-    super(new Duration(System.nanoTime(), TimeUnit.NANOSECONDS));
-    this.config = config;
-    retryPolicy = config.retryPolicy;
-    this.circuitBreaker = config.circuitBreaker;
-    waitNanos = retryPolicy.getDelay().toNanos();
+  AbstractExecution(FailsafeExecutor<Object> executor) {
+    super(Duration.ofNanos(System.nanoTime()));
+    this.executor = executor;
+    policyExecutors = new ArrayList<>(executor.policies.size());
+    ListIterator<Policy<Object>> policyIterator = executor.policies.listIterator(executor.policies.size());
+    while (policyIterator.hasPrevious())
+      policyExecutors.add(policyIterator.previous().toExecutor(this));
+  }
+
+  /**
+   * Records an execution attempt.
+   *
+   * @throws IllegalStateException if the execution is already complete
+   */
+  void record(ExecutionResult result) {
+    Assert.state(!completed, "Execution has already been completed");
+    attempts.incrementAndGet();
+    lastResult = result.getResult();
+    lastFailure = result.getFailure();
+  }
+
+  void preExecute() {
+    resultHandled = false;
+  }
+
+  /**
+   * Performs post-execution handling of the {@code result}, returning true if complete else false.
+   *
+   * @throws IllegalStateException if the execution is already complete
+   */
+  synchronized boolean postExecute(ExecutionResult result) {
+    record(result);
+    boolean allComplete = true;
+    for (PolicyExecutor<Policy<Object>> policyExecutor : policyExecutors) {
+      result = policyExecutor.postExecute(result);
+      allComplete = allComplete && result.isComplete();
+    }
+
+    waitNanos = result.getWaitNanos();
+    completed = allComplete;
+    return completed;
   }
 
   /**
@@ -65,101 +104,18 @@ abstract class AbstractExecution extends ExecutionContext {
   }
 
   /**
-   * Returns the time to wait before the next execution attempt.
+   * Returns the time to wait before the next execution attempt. Returns {@code 0} if an execution has not yet
+   * occurred.
    */
   public Duration getWaitTime() {
-    return new Duration(waitNanos, TimeUnit.NANOSECONDS);
+    return Duration.ofNanos(waitNanos);
   }
 
   /**
-   * Returns whether the execution is complete.
+   * Returns whether the execution is complete or if it can be retried. An execution is considered complete only when
+   * all configured policies consider the execution complete.
    */
   public boolean isComplete() {
     return completed;
-  }
-
-  void before() {
-    if (circuitBreaker != null)
-      circuitBreaker.before();
-    attemptStartTime = System.nanoTime();
-  }
-
-  /**
-   * Records and attempts to complete the execution, returning true if complete else false.
-   * 
-   * @throws IllegalStateException if the execution is already complete
-   */
-   boolean complete(Object result, Throwable failure, boolean checkArgs) {
-    Assert.state(!completed, "Execution has already been completed");
-    executions++;
-    lastResult = result;
-    lastFailure = failure;
-    long elapsedNanos = getElapsedTime().toNanos();
-
-    // Record the execution with the circuit breaker
-    if (circuitBreaker != null) {
-      Duration timeout = circuitBreaker.getTimeout();
-      boolean timeoutExceeded = timeout != null && elapsedNanos >= timeout.toNanos();
-      if (circuitBreaker.isFailure(result, failure) || timeoutExceeded)
-        circuitBreaker.recordFailure();
-      else
-        circuitBreaker.recordSuccess();
-    }
-
-    // Initialize or adjust the delay for backoffs
-    if (delayNanos == -1)
-      delayNanos = retryPolicy.getDelay().toNanos();
-    else if (retryPolicy.getMaxDelay() != null)
-      delayNanos = (long) Math.min(delayNanos * retryPolicy.getDelayFactor(), retryPolicy.getMaxDelay().toNanos());
-
-    // Calculate the wait time with jitter
-    if (retryPolicy.getJitter() != null)
-      waitNanos = randomizeDelay(delayNanos, retryPolicy.getJitter().toNanos(), Math.random());
-    else if (retryPolicy.getJitterFactor() > 0.0)
-      waitNanos = randomizeDelay(delayNanos, retryPolicy.getJitterFactor(), Math.random());
-    else
-      waitNanos = delayNanos;
-
-    // Adjust the wait time for max duration
-    if (retryPolicy.getMaxDuration() != null) {
-      long maxRemainingWaitTime = retryPolicy.getMaxDuration().toNanos() - elapsedNanos;
-      waitNanos = Math.min(waitNanos, maxRemainingWaitTime < 0 ? 0 : maxRemainingWaitTime);
-      if (waitNanos < 0)
-        waitNanos = 0;
-    }
-
-    boolean maxRetriesExceeded = retryPolicy.getMaxRetries() != -1 && executions > retryPolicy.getMaxRetries();
-    boolean maxDurationExceeded = retryPolicy.getMaxDuration() != null
-        && elapsedNanos > retryPolicy.getMaxDuration().toNanos();
-    retriesExceeded = maxRetriesExceeded || maxDurationExceeded;
-    boolean isAbortable = retryPolicy.canAbortFor(result, failure);
-    boolean isRetryable = retryPolicy.canRetryFor(result, failure);
-    boolean shouldRetry = !retriesExceeded && checkArgs && !isAbortable && retryPolicy.allowsRetries() && isRetryable;
-    completed = isAbortable || !shouldRetry;
-    success = completed && !isAbortable && !isRetryable && failure == null;
-
-    // Call listeners
-    if (!success)
-      config.handleFailedAttempt(result, failure, this);
-    if (isAbortable)
-      config.handleAbort(result, failure, this);
-    else {
-      if (!success && retriesExceeded)
-        config.handleRetriesExceeded(result, failure, this);
-      if (completed)
-        config.handleComplete(result, failure, this, success);
-    }
-
-    return completed;
-  }
-
-  static long randomizeDelay(long delay, long jitter, double random) {
-    double randomAddend = (1 - random * 2) * jitter;
-    return (long) (delay + randomAddend);
-  }
-
-  static long randomizeDelay(long delay, double jitterFactor, double random) {
-    double randomFactor = 1 + (1 - random * 2) * jitterFactor;
-    return (long) (delay * randomFactor);
   }
 }
