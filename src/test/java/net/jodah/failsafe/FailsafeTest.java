@@ -7,10 +7,6 @@ import java.util.concurrent.ScheduledExecutorService;
 import org.mockito.Mockito;
 import org.testng.annotations.Test;
 
-import net.jodah.failsafe.AsyncFailsafe;
-import net.jodah.failsafe.Failsafe;
-import net.jodah.failsafe.RetryPolicy;
-import net.jodah.failsafe.SyncFailsafe;
 import net.jodah.failsafe.util.concurrent.Scheduler;
 
 @Test

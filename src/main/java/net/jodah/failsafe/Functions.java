@@ -2,31 +2,24 @@ package net.jodah.failsafe;
 
 import java.util.concurrent.Callable;
 import java.util.concurrent.Semaphore;
-import java.util.function.BiConsumer;
 
-import net.jodah.failsafe.event.ContextualResultListener;
-import net.jodah.failsafe.event.ResultListener;
 import net.jodah.failsafe.function.AsyncCallable;
 import net.jodah.failsafe.function.AsyncRunnable;
+import net.jodah.failsafe.function.CheckedBiConsumer;
+import net.jodah.failsafe.function.CheckedBiFunction;
+import net.jodah.failsafe.function.CheckedConsumer;
+import net.jodah.failsafe.function.CheckedFunction;
 import net.jodah.failsafe.function.CheckedRunnable;
 import net.jodah.failsafe.function.ContextualCallable;
 import net.jodah.failsafe.function.ContextualRunnable;
 import net.jodah.failsafe.internal.util.Assert;
 
 /**
- * Utility for creating callables.
+ * Utilities and adapters for creating functions.
  * 
  * @author Jonathan Halterman
  */
-final class Callables {
-  static abstract class ContextualCallableWrapper<T> implements Callable<T> {
-    protected ExecutionContext context;
-
-    void inject(ExecutionContext context) {
-      this.context = context;
-    }
-  }
-
+final class Functions {
   static abstract class AsyncCallableWrapper<T> implements Callable<T> {
     protected AsyncExecution execution;
 
@@ -35,58 +28,12 @@ final class Callables {
     }
   }
 
-  static <T> Callable<T> of(final ContextualResultListener<T, Throwable> listener, final T result,
-      final Throwable failure, final ExecutionContext context) {
-    return new Callable<T>() {
-      @Override
-      public T call() {
-        listener.onResult(result, failure, context);
-        return null;
-      }
-    };
-  }
+  static abstract class ContextualCallableWrapper<T> implements Callable<T> {
+    protected ExecutionContext context;
 
-  static <T> Callable<T> of(final ResultListener<T, Throwable> listener, final T result, final Throwable failure) {
-    return new Callable<T>() {
-      @Override
-      public T call() {
-        listener.onResult(result, failure);
-        return null;
-      }
-    };
-  }
-
-  static <T> Callable<T> of(final CheckedRunnable runnable) {
-    Assert.notNull(runnable, "runnable");
-    return new Callable<T>() {
-      @Override
-      public T call() throws Exception {
-        runnable.run();
-        return null;
-      }
-    };
-  }
-
-  static <T> Callable<T> of(final ContextualCallable<T> callable) {
-    Assert.notNull(callable, "callable");
-    return new ContextualCallableWrapper<T>() {
-      @Override
-      public T call() throws Exception {
-        T result = callable.call(context);
-        return result;
-      }
-    };
-  }
-
-  static <T> Callable<T> of(final ContextualRunnable runnable) {
-    Assert.notNull(runnable, "runnable");
-    return new ContextualCallableWrapper<T>() {
-      @Override
-      public T call() throws Exception {
-        runnable.run(context);
-        return null;
-      }
-    };
+    void inject(ExecutionContext context) {
+      this.context = context;
+    }
   }
 
   static <T> AsyncCallableWrapper<T> asyncOf(final AsyncCallable<T> callable) {
@@ -195,7 +142,8 @@ final class Callables {
     };
   }
 
-  static <T> AsyncCallableWrapper<T> ofFuture(final AsyncCallable<java.util.concurrent.CompletableFuture<T>> callable) {
+  static <T> AsyncCallableWrapper<T> asyncOfFuture(
+      final AsyncCallable<java.util.concurrent.CompletableFuture<T>> callable) {
     Assert.notNull(callable, "callable");
     return new AsyncCallableWrapper<T>() {
       Semaphore asyncFutureLock = new Semaphore(1);
@@ -205,7 +153,7 @@ final class Callables {
         try {
           execution.before();
           asyncFutureLock.acquire();
-          callable.call(execution).whenComplete(new BiConsumer<T, Throwable>() {
+          callable.call(execution).whenComplete(new java.util.function.BiConsumer<T, Throwable>() {
             @Override
             public void accept(T innerResult, Throwable failure) {
               try {
@@ -230,14 +178,14 @@ final class Callables {
     };
   }
 
-  static <T> AsyncCallableWrapper<T> ofFuture(final Callable<java.util.concurrent.CompletableFuture<T>> callable) {
+  static <T> AsyncCallableWrapper<T> asyncOfFuture(final Callable<java.util.concurrent.CompletableFuture<T>> callable) {
     Assert.notNull(callable, "callable");
     return new AsyncCallableWrapper<T>() {
       @Override
       public T call() throws Exception {
         try {
           execution.before();
-          callable.call().whenComplete(new BiConsumer<T, Throwable>() {
+          callable.call().whenComplete(new java.util.function.BiConsumer<T, Throwable>() {
             @Override
             public void accept(T innerResult, Throwable failure) {
               // Unwrap CompletionException cause
@@ -255,7 +203,7 @@ final class Callables {
     };
   }
 
-  static <T> AsyncCallableWrapper<T> ofFuture(
+  static <T> AsyncCallableWrapper<T> asyncOfFuture(
       final ContextualCallable<java.util.concurrent.CompletableFuture<T>> callable) {
     Assert.notNull(callable, "callable");
     return new AsyncCallableWrapper<T>() {
@@ -263,7 +211,7 @@ final class Callables {
       public T call() throws Exception {
         try {
           execution.before();
-          callable.call(execution).whenComplete(new BiConsumer<T, Throwable>() {
+          callable.call(execution).whenComplete(new java.util.function.BiConsumer<T, Throwable>() {
             @Override
             public void accept(T innerResult, Throwable failure) {
               // Unwrap CompletionException cause
@@ -277,6 +225,96 @@ final class Callables {
         }
 
         return null;
+      }
+    };
+  }
+
+  static <T> Callable<T> callableOf(final CheckedRunnable runnable) {
+    Assert.notNull(runnable, "runnable");
+    return new Callable<T>() {
+      @Override
+      public T call() throws Exception {
+        runnable.run();
+        return null;
+      }
+    };
+  }
+
+  static <T> Callable<T> callableOf(final ContextualCallable<T> callable) {
+    Assert.notNull(callable, "callable");
+    return new ContextualCallableWrapper<T>() {
+      @Override
+      public T call() throws Exception {
+        T result = callable.call(context);
+        return result;
+      }
+    };
+  }
+
+  static <T> Callable<T> callableOf(final ContextualRunnable runnable) {
+    Assert.notNull(runnable, "runnable");
+    return new ContextualCallableWrapper<T>() {
+      @Override
+      public T call() throws Exception {
+        runnable.run(context);
+        return null;
+      }
+    };
+  }
+
+  static <T, U, R> CheckedBiFunction<T, U, R> fnOf(final Callable<R> callable) {
+    return new CheckedBiFunction<T, U, R>() {
+      @Override
+      public R apply(T t, U u) throws Exception {
+        return callable.call();
+      }
+    };
+  }
+
+  static <T, U, R> CheckedBiFunction<T, U, R> fnOf(final CheckedBiConsumer<T, U> consumer) {
+    return new CheckedBiFunction<T, U, R>() {
+      @Override
+      public R apply(T t, U u) throws Exception {
+        consumer.accept(t, u);
+        return null;
+      }
+    };
+  }
+
+  static <T, U, R> CheckedBiFunction<T, U, R> fnOf(final CheckedConsumer<U> consumer) {
+    return new CheckedBiFunction<T, U, R>() {
+      @Override
+      public R apply(T t, U u) throws Exception {
+        consumer.accept(u);
+        return null;
+      }
+    };
+  }
+
+  static <T, U, R> CheckedBiFunction<T, U, R> fnOf(final CheckedFunction<U, R> function) {
+    return new CheckedBiFunction<T, U, R>() {
+      @Override
+      public R apply(T t, U u) throws Exception {
+        return function.apply(u);
+      }
+    };
+  }
+
+  static <T, U, R> CheckedBiFunction<T, U, R> fnOf(final CheckedRunnable runnable) {
+    return new CheckedBiFunction<T, U, R>() {
+      @Override
+      public R apply(T t, U u) throws Exception {
+        runnable.run();
+        return null;
+      }
+    };
+  }
+
+  static <T, U, R> CheckedBiFunction<T, U, R> fnOf(final R result) {
+    return new CheckedBiFunction<T, U, R>() {
+      @Override
+      public R apply(T t, U u) throws Exception {
+        return result;
       }
     };
   }
